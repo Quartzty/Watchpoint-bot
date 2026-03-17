@@ -39,7 +39,8 @@ def init_db():
             scraped_at TEXT NOT NULL,
             published_at TEXT,
             used_in_message INTEGER DEFAULT 0,
-            raw_html TEXT
+            raw_html TEXT,
+            image_url TEXT
         );
 
         -- Price index history (WatchCharts, Chrono24, Subdial, etc.)
@@ -105,6 +106,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_indices_name ON price_indices(index_name);
     """)
     conn.commit()
+
+    # Migration: add image_url column if not present (for existing databases)
+    try:
+        conn.execute("ALTER TABLE articles ADD COLUMN image_url TEXT")
+        conn.commit()
+        log.info("Migration: added image_url column to articles")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.close()
     log.info("Database initialized")
 
@@ -118,19 +128,20 @@ def url_hash(url: str) -> str:
 
 def store_article(url: str, title: str, summary: str, source_name: str,
                   source_category: str, priority: str = "P2",
-                  published_at: str = None, raw_html: str = None) -> bool:
+                  published_at: str = None, raw_html: str = None,
+                  image_url: str = None) -> bool:
     """Store an article. Returns False if duplicate (already exists)."""
     conn = get_db()
     try:
         conn.execute("""
             INSERT OR IGNORE INTO articles
-            (url_hash, url, title, summary, source_name, source_category, priority, scraped_at, published_at, raw_html)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (url_hash, url, title, summary, source_name, source_category, priority, scraped_at, published_at, raw_html, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             url_hash(url), url, title, summary, source_name,
             source_category, priority,
             datetime.now(TIMEZONE).isoformat(),
-            published_at, raw_html
+            published_at, raw_html, image_url
         ))
         conn.commit()
         inserted = conn.total_changes > 0

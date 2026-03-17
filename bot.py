@@ -2,8 +2,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║       WATCHPOINT ADVISORY — TELEGRAM BOT v2              ║
-║       5 messages/jour · 3 Flash + 2 Rich                 ║
-║       Direct scraping + Claude formatting                 ║
+║       4 Short + 1 Rich · Direct scraping + Claude        ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
@@ -67,9 +66,9 @@ def job(slot: int, slot_type: str):
         log.error(f"No message generated for slot {slot} — skipping send")
         return
 
-    for text, image_url, msg_type, cat_key in items:
-        dispatch(text, image_url, msg_type=msg_type)
-        log.info(f"Dispatched [{msg_type}] {cat_key}")
+    for text, image_urls, msg_type, cat_key in items:
+        dispatch(text, image_urls, msg_type=msg_type)
+        log.info(f"Dispatched [{msg_type}] {cat_key} ({len(image_urls)} images)")
 
 
 # ─── SCHEDULER ───────────────────────────────────────────────────────────────
@@ -105,13 +104,8 @@ def check_health_report():
 
 def setup_schedule():
     """Configure the scheduler."""
-    # Slot checks every 30 seconds
     schedule.every(30).seconds.do(check_slots)
-
-    # Scrape cycle
     schedule.every(SCRAPE_INTERVAL_MINUTES).minutes.do(run_scrapers)
-
-    # Health report check every minute
     schedule.every(1).minutes.do(check_health_report)
 
     log.info("Scheduler started")
@@ -127,14 +121,13 @@ if __name__ == "__main__":
     print("""
 ╔══════════════════════════════════════════════════════════╗
 ║       WATCHPOINT ADVISORY — TELEGRAM BOT v2              ║
-║       3 Flash + 2 Rich · Direct Scraping + Claude        ║
+║       4 Short + 1 Rich · Direct Scraping + Claude        ║
 ╚══════════════════════════════════════════════════════════╝
 """)
 
     if not validate_config():
         exit(1)
 
-    # Initialize database
     init_db()
 
     # Load already-fired slots from DB
@@ -152,27 +145,24 @@ if __name__ == "__main__":
     setup_schedule()
 
     # ── TEST MODE ─────────────────────────────────────────────────────────
-    # TEST_ALL=true      → sends one message of each type then exits
-    # TEST_TYPE=category → sends one message of that specific category then exits
-    # Categories: news_flash, market_signal, event_flash, release, market_update, analysis, event, discontinuation
     test_all = os.getenv("TEST_ALL", "false").lower() == "true"
     test_type = os.getenv("TEST_TYPE", "").strip()
 
     if test_all:
         log.info("╔═══ TEST MODE: ALL TYPES ═══╗")
-        all_cats = ["news_flash", "market_signal", "event_flash",
+        all_cats = ["news_flash", "market_signal", "event_flash", "release_flash",
                     "release", "market_update", "analysis", "event"]
         for cat_key in all_cats:
             log.info(f"\n{'━' * 50}")
             log.info(f"Testing: {cat_key}")
             items = generate_specific(cat_key)
             if items:
-                for text, image_url, msg_type, ckey in items:
-                    dispatch(text, image_url, msg_type=msg_type)
-                    log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars)")
+                for text, image_urls, msg_type, ckey in items:
+                    dispatch(text, image_urls, msg_type=msg_type)
+                    log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars, {len(image_urls)} img)")
             else:
                 log.error(f"❌ No message generated for {cat_key}")
-            time.sleep(3)  # Avoid Telegram rate limits
+            time.sleep(3)
         log.info("╚═══ TEST COMPLETE ═══╝")
         sys.exit(0)
 
@@ -180,9 +170,9 @@ if __name__ == "__main__":
         log.info(f"╔═══ TEST MODE: {test_type.upper()} ═══╗")
         items = generate_specific(test_type)
         if items:
-            for text, image_url, msg_type, ckey in items:
-                dispatch(text, image_url, msg_type=msg_type)
-                log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars)")
+            for text, image_urls, msg_type, ckey in items:
+                dispatch(text, image_urls, msg_type=msg_type)
+                log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars, {len(image_urls)} img)")
         else:
             log.error(f"❌ No message generated for {test_type}")
         log.info("╚═══ TEST COMPLETE ═══╝")
@@ -191,7 +181,7 @@ if __name__ == "__main__":
     # ── NORMAL MODE ───────────────────────────────────────────────────────
     if SEND_ON_START:
         log.info("SEND_ON_START=true → sending slot 0 immediately")
-        job(slot=0, slot_type="flash")
+        job(slot=0, slot_type="short")
 
     log.info("Bot started. Ctrl+C to stop.\n")
 

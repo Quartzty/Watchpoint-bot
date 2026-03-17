@@ -42,34 +42,38 @@ MODEL_FLASH = "claude-sonnet-4-20250514"    # Sonnet for all messages — better
 MODEL_RICH  = "claude-sonnet-4-20250514"    # Sonnet for detailed content
 
 # ─── SCHEDULE ────────────────────────────────────────────────────────────────
-# 5 messages/jour — 3 Flash (courts) + 2 Rich (détaillés)
+# 5 messages/jour — 4 Short + 1 Rich (18h00)
 # Horaires en heure Paris
 
 DAILY_SLOTS = [
-    {"time": "08:30", "slot": 0, "type": "flash"},   # Flash — matin
-    {"time": "11:00", "slot": 1, "type": "rich"},     # Rich — milieu de matinée
-    {"time": "14:00", "slot": 2, "type": "flash"},    # Flash — début d'après-midi
-    {"time": "18:00", "slot": 3, "type": "rich"},     # Rich — fin d'après-midi
-    {"time": "21:00", "slot": 4, "type": "flash"},    # Flash — soirée
+    {"time": "08:30", "slot": 0, "type": "short"},    # Short — matin
+    {"time": "11:00", "slot": 1, "type": "short"},     # Short — milieu de matinée
+    {"time": "14:00", "slot": 2, "type": "short"},     # Short — début d'après-midi
+    {"time": "18:00", "slot": 3, "type": "rich"},      # Rich — le message consistant du jour
+    {"time": "21:00", "slot": 4, "type": "short"},     # Short — soirée
 ]
 
 # ─── CONTENT CATEGORIES ─────────────────────────────────────────────────────
 
-# Flash slots: short, punchy, one-fact messages. NO releases.
-FLASH_CATEGORIES = [
+# Short slots: concise messages with image, 40-100 words
+SHORT_CATEGORIES = [
     "news_flash",       # Breaking news, appointments, partnerships
     "market_signal",    # Quick price move or index change
     "event_flash",      # Upcoming auction or event date
+    "release_flash",    # Quick release announcement (not detailed)
 ]
 
-# Rich slots: detailed content with analysis
+# Rich slots: detailed content with analysis (1 per day at 18h)
 RICH_CATEGORIES = [
-    "release",          # New watch launches
-    "discontinuation",  # End of production signals
+    "release",          # New watch launches — detailed
     "market_update",    # Full secondary market data
     "analysis",         # Industry reports and studies
     "event",            # Major auction results, fair coverage
+    "discontinuation",  # End of production signals
 ]
+
+# Keep backward compat
+FLASH_CATEGORIES = SHORT_CATEGORIES
 
 # Weighted rotation: categories with higher weights appear more often
 RICH_WEIGHTS = {

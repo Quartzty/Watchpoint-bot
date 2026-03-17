@@ -2,19 +2,26 @@
 ╔══════════════════════════════════════════════════════════╗
 ║       WATCHPOINT ADVISORY — TELEGRAM SENDING             ║
 ╚══════════════════════════════════════════════════════════╝
+
+Sends messages as photos with captions (sendPhoto/sendMediaGroup).
+Text-only fallback when no image is available.
 """
 
+import json
 import time
 import requests
 from config import TELEGRAM_TOKEN, CHANNEL_ID, ADMIN_CHAT_ID, log
 
 
 def send_photo(image_url: str, caption: str, chat_id: str = None) -> bool:
-    """Send a photo + caption (HTML, max 1024 chars)."""
+    """Send a single photo + caption (HTML, max 1024 chars)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     target = chat_id or CHANNEL_ID
+
+    # Telegram caption limit is 1024 chars
     if len(caption) > 1024:
         caption = caption[:1020] + "…"
+
     try:
         r = requests.post(url, json={
             "chat_id":    target,
@@ -26,10 +33,53 @@ def send_photo(image_url: str, caption: str, chat_id: str = None) -> bool:
         if result.get("ok"):
             log.info("Photo sent to Telegram")
             return True
-        log.warning(f"Photo rejected: {result.get('description', '?')}")
+        err = result.get("description", "?")
+        log.warning(f"Photo rejected: {err}")
+        # If photo URL is bad, return False so we can fall back
         return False
     except requests.RequestException as e:
         log.error(f"Photo request error: {e}")
+        return False
+
+
+def send_media_group(image_urls: list, caption: str, chat_id: str = None) -> bool:
+    """Send multiple photos as a media group. Caption goes on the first photo."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup"
+    target = chat_id or CHANNEL_ID
+
+    if not image_urls:
+        return False
+
+    # Telegram caption limit is 1024 chars
+    if len(caption) > 1024:
+        caption = caption[:1020] + "…"
+
+    # Build media array — caption only on first photo
+    media = []
+    for i, img_url in enumerate(image_urls[:10]):  # Telegram max 10 media
+        item = {
+            "type": "photo",
+            "media": img_url,
+        }
+        if i == 0:
+            item["caption"] = caption
+            item["parse_mode"] = "HTML"
+        media.append(item)
+
+    try:
+        r = requests.post(url, json={
+            "chat_id": target,
+            "media":   media,
+        }, timeout=30)
+        result = r.json()
+        if result.get("ok"):
+            log.info(f"Media group ({len(image_urls)} photos) sent to Telegram")
+            return True
+        err = result.get("description", "?")
+        log.warning(f"Media group rejected: {err}")
+        return False
+    except requests.RequestException as e:
+        log.error(f"Media group request error: {e}")
         return False
 
 
@@ -96,23 +146,63 @@ def send_split(text: str, chat_id: str = None) -> bool:
     return success
 
 
-def dispatch(message: str, image_url: str | None, msg_type: str = ""):
-    """Send a message with optional photo. Handles all logic for image/text dispatch."""
-    is_flash = msg_type in ("NEWS", "FLASH")
+def dispatch(message: str, image_urls: list = None, msg_type: str = ""):
+    """Send a message with photo(s). Always tries photo first.
 
-    if image_url:
-        if len(message) <= 950:
-            if not send_photo(image_url, message):
-                send_message(message, allow_preview=not is_flash)
+    image_urls: list of image URL strings. Can be empty/None.
+    If 1 image: sendPhoto with caption
+    If 2+ images: sendMediaGroup with caption on first
+    If 0 images: sendMessage with text
+    If caption too long for photo: sendPhoto + separate sendMessage
+    """
+    if not image_urls:
+        image_urls = []
+
+    # Filter out None/empty URLs
+    image_urls = [u for u in image_urls if u and u.startswith("http")]
+
+    if len(image_urls) >= 2:
+        # Multiple images — try media group
+        if len(message) <= 1024:
+            if not send_media_group(image_urls, message):
+                # Fallback: try single photo
+                if not send_photo(image_urls[0], message):
+                    send_message(message, allow_preview=True)
         else:
-            caption = next((l.strip() for l in message.split("\n") if l.strip()), "")[:200]
-            if send_photo(image_url, caption):
+            # Caption too long — send photos with short caption, then full text
+            short_caption = _extract_title(message)
+            if send_media_group(image_urls, short_caption):
                 time.sleep(1)
                 send_message(message)
             else:
-                send_message(message, allow_preview=not is_flash)
+                send_message(message, allow_preview=True)
+
+    elif len(image_urls) == 1:
+        # Single image
+        if len(message) <= 1024:
+            if not send_photo(image_urls[0], message):
+                send_message(message, allow_preview=True)
+        else:
+            # Caption too long — photo with title, then full text
+            short_caption = _extract_title(message)
+            if send_photo(image_urls[0], short_caption):
+                time.sleep(1)
+                send_message(message)
+            else:
+                send_message(message, allow_preview=True)
+
     else:
-        send_message(message, allow_preview=not is_flash)
+        # No images — text only
+        send_message(message, allow_preview=True)
+
+
+def _extract_title(message: str) -> str:
+    """Extract first meaningful line as short caption for photo."""
+    lines = [l.strip() for l in message.split("\n") if l.strip()]
+    if lines:
+        # Take first 200 chars of first non-empty line
+        return lines[0][:200]
+    return ""
 
 
 def send_admin(text: str) -> bool:

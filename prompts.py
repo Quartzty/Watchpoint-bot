@@ -168,13 +168,13 @@ Annonce rapide d'un événement à venir.
 
 CATEGORIES = {
 
-    # ── FLASH CATEGORIES (short, 30-80 words) ────────────────────────────────
+    # ── SHORT CATEGORIES (30-100 words) ──────────────────────────────────────
 
     "news_flash": {
         "label": "Flash News",
         "header": "",
         "msg_type": "NEWS",
-        "slot_type": "flash",
+        "slot_type": "short",
         "prompt": """Voici les articles récents du marché horloger :
 
 {articles}
@@ -192,7 +192,8 @@ Si AUCUN article ne correspond aux sujets acceptés, réponds uniquement : SKIP
 
 FORMAT STRICT TYPE 5 — NEWS FLASH.
 Écris comme un message WhatsApp à un groupe de passionnés. Court, direct, humain.
-Finis avec un petit commentaire si t'as un avis.""",
+Finis avec un petit commentaire si t'as un avis.
+Si un article contient une image pertinente (IMAGE: url), inclus-la sur la première ligne au format IMAGE: https://...""",
         "fallback_prompt": """Recherche sur le web l'actualité horlogère la plus notable de la semaine.
 
 Sources : Hodinkee, aBlogtoWatch, Monochrome Watches, WatchPro, SJX Watches, Fratello, WorldTempus, Bloomberg Luxury, Chrono24 News, fhs.ch.
@@ -209,7 +210,7 @@ FORMAT TYPE 5 — NEWS FLASH. Court, direct, ton de passionné.""",
         "label": "Signal Marché",
         "header": "",
         "msg_type": "FLASH",
-        "slot_type": "flash",
+        "slot_type": "short",
         "prompt": """Voici les dernières données de marché disponibles :
 
 {articles}
@@ -219,7 +220,8 @@ FORMAT TYPE 5 — NEWS FLASH. Court, direct, ton de passionné.""",
 Identifie LE mouvement de prix ou changement d'indice le plus notable.
 
 FORMAT TYPE 6 — MARKET SIGNAL.
-Donne le chiffre, la variation, et une phrase de contexte humaine. Pas de jargon IA.""",
+Donne le chiffre, la variation, et une phrase de contexte humaine. Pas de jargon IA.
+Si un article contient une image ou graphique pertinent (IMAGE: url), inclus-la sur la première ligne au format IMAGE: https://...""",
         "fallback_prompt": """Recherche sur le web les derniers mouvements du marché secondaire horloger.
 
 Sources : WatchCharts, Chrono24 ChronoPulse, Subdial, WatchSignals, Everywatch.
@@ -233,19 +235,50 @@ FORMAT TYPE 6 — MARKET SIGNAL. Chiffre + contexte humain.""",
         "label": "Flash Événement",
         "header": "",
         "msg_type": "FLASH",
-        "slot_type": "flash",
+        "slot_type": "short",
         "prompt": """Voici les événements horlogers récents :
 
 {articles}
 
 Sélectionne l'événement le plus notable à venir ou en cours.
 
-FORMAT TYPE 7 — EVENT FLASH. Court, direct, dis pourquoi c'est important.""",
+FORMAT TYPE 7 — EVENT FLASH. Court, direct, dis pourquoi c'est important.
+Si un article contient une image pertinente (IMAGE: url), inclus-la sur la première ligne au format IMAGE: https://...""",
         "fallback_prompt": """Recherche sur le web les événements horlogers récemment annoncés.
 
 Sources : Phillips, Christie's, Sotheby's, Watches & Wonders, WatchPro Events, Hodinkee.
 
 FORMAT TYPE 7 — EVENT FLASH. Court, direct, dis pourquoi c'est important.""",
+    },
+
+    "release_flash": {
+        "label": "Flash Release",
+        "header": "",
+        "msg_type": "NEWS",
+        "slot_type": "short",
+        "prompt": """Voici les nouvelles montres annoncées récemment :
+
+{articles}
+
+Choisis LA release la plus notable et fais-en un message court (TYPE 5 — NEWS FLASH adapté release).
+
+Format :
+⌚ ou emoji adapté + <b>[Marque] [Modèle]</b>
+2-4 phrases max : ce que c'est, le prix si dispo, et ton avis rapide (un commentaire de passionné, pas un communiqué).
+
+Ce n'est PAS une review détaillée — c'est une annonce flash. Garde le détail pour le TYPE 1 RELEASE.
+
+Si un article contient une image pertinente (IMAGE: url), inclus-la sur la première ligne au format IMAGE: https://...
+
+30–100 mots. Emoji en tête. UN seul modèle.""",
+        "fallback_prompt": """Recherche sur le web les nouvelles montres annoncées ces 48 dernières heures.
+
+Sources : Hodinkee, aBlogtoWatch, Monochrome Watches, WatchPro, SJX Watches, Fratello, sites officiels des marques.
+
+Choisis LA release la plus notable et fais une annonce flash courte.
+⌚ + <b>[Marque] [Modèle]</b> + 2-4 phrases + ton avis rapide.
+
+30–100 mots. Pas de review détaillée — juste l'annonce.""",
     },
 
     # ── RICH CATEGORIES (detailed, 150-300 words) ─────────────────────────────

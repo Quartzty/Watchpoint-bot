@@ -5,6 +5,7 @@
 
 Picks categories via weighted rotation, builds prompts from
 scraped data, calls Claude, applies quality filters.
+Returns (text, image_urls, msg_type, category).
 """
 
 import re
@@ -13,7 +14,7 @@ import anthropic
 from datetime import datetime, timedelta
 from config import (
     ANTHROPIC_KEY, TIMEZONE, MODEL_FLASH, MODEL_RICH,
-    FLASH_CATEGORIES, RICH_CATEGORIES, RICH_WEIGHTS, log,
+    SHORT_CATEGORIES, RICH_CATEGORIES, RICH_WEIGHTS, log,
 )
 from prompts import SYSTEM_PROMPT, CATEGORIES
 from database import (
@@ -28,28 +29,20 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 # ─── CATEGORY SELECTION ──────────────────────────────────────────────────────
 
 def pick_category(slot_type: str) -> str:
-    """Pick a category using weighted rotation that avoids repeating recent choices.
-
-    For flash slots: randomly picks from FLASH_CATEGORIES.
-    For rich slots: uses weighted selection that deprioritizes recently used categories.
-    """
-    if slot_type == "flash":
-        return random.choice(FLASH_CATEGORIES)
+    """Pick a category using weighted rotation that avoids repeating recent choices."""
+    if slot_type == "short":
+        return random.choice(SHORT_CATEGORIES)
 
     # Rich: weighted rotation with recency penalty
     recent = get_recent_categories(days=3)
     recent_cats = [r["category"] for r in recent]
 
-    # Build weight table with recency penalty
     weights = {}
     for cat, base_weight in RICH_WEIGHTS.items():
-        # Count how many times this category appeared in last 3 days
         count = recent_cats.count(cat)
-        # Reduce weight by 50% for each recent use, minimum 0.5
         penalty = max(0.5, base_weight * (0.5 ** count))
         weights[cat] = penalty
 
-    # Weighted random selection
     categories = list(weights.keys())
     w = [weights[c] for c in categories]
     total = sum(w)
@@ -63,21 +56,17 @@ def pick_category(slot_type: str) -> str:
 # ─── QUALITY FILTERS ─────────────────────────────────────────────────────────
 
 _META_PHRASES = [
-    "ma plage de dates",
-    "plage de dates autorisée",
-    "hors de ma plage",
-    "hors de la plage autorisée",
+    "ma plage de dates", "plage de dates autorisée",
+    "hors de ma plage", "hors de la plage autorisée",
     "après avoir effectué plusieurs recherches",
     "en cherchant les actualités récentes",
     "conformément à mes instructions",
-    "je ne peux pas produire",
-    "je suis incapable de",
+    "je ne peux pas produire", "je suis incapable de",
     "il m'est impossible de",
     "je n'ai trouvé aucune actualité horlogère",
     "aucune actualité horlogère valide",
     "dans la plage de dates",
-    "je n'ai pas trouvé",
-    "mes recherches n'ont",
+    "je n'ai pas trouvé", "mes recherches n'ont",
     "aucun résultat pertinent",
 ]
 
@@ -88,72 +77,35 @@ def is_meta_commentary(text: str) -> bool:
     return any(phrase in t for phrase in _META_PHRASES)
 
 
-_RELEASE_INDICATORS = [
-    "réserve de marche", "reserve de marche",
-    "calibre ", "cal.", "mouvement automatique", "mouvement manufacture",
-    "analyse watchpoint", "marché secondaire", "marche secondaire",
-    "boîtier en", "boitier en", "diamètre mm", "mm de diamètre",
-    "tirage limité", "exemplaires",
-]
-
-# Words that strongly signal a release/launch announcement in a flash
-_RELEASE_VERBS = [
-    "dévoile", "devoile", "présente sa", "presente sa",
-    "présente son", "presente son", "lance sa ", "lance son ",
-    "lancé ", "nouveau modèle", "nouveau modele",
-    "nouvelle montre", "nouvelle référence", "nouvelle reference",
-    "nouvelle version", "complication légendaire", "complication revisit",
-    "édition limitée", "edition limitee",
-]
-
-
-def is_release_disguised_as_flash(text: str, msg_type: str) -> bool:
-    """Block detailed release content in flash slots."""
-    if msg_type not in ("NEWS", "FLASH"):
-        return False
-
-    # Handle SKIP responses from Claude (no suitable non-release content found)
+def is_skip_response(text: str) -> bool:
+    """Check if Claude returned SKIP (no suitable content found)."""
     plain = re.sub(r"<[^>]+>", "", text).strip()
-    if plain.upper() == "SKIP":
-        log.info("Claude returned SKIP — no suitable flash content")
-        return True
-
-    # Strip HTML tags before measuring length
-    plain_len = len(plain)
-    if plain_len > 500:
-        log.warning(f"Flash too long ({plain_len} chars plain / {len(text)} raw) — probably a release")
-        return True
-
-    t = text.lower()
-
-    # Check for release/launch verbs — a single strong signal is enough
-    verb_hits = [v for v in _RELEASE_VERBS if v in t]
-    if verb_hits:
-        log.warning(f"Flash contains release verbs {verb_hits} — blocked")
-        return True
-
-    # Check for technical spec indicators — need 2+ for these weaker signals
-    hits = [ind for ind in _RELEASE_INDICATORS if ind in t]
-    if len(hits) >= 2:
-        log.warning(f"Flash contains multiple release indicators {hits} — blocked")
-        return True
-
-    return False
+    return plain.upper() == "SKIP"
 
 
-def parse_image(raw: str) -> tuple:
-    """Extract IMAGE: URL from first line if present."""
+def parse_images_from_response(raw: str) -> tuple:
+    """Extract IMAGE: URLs from response. Returns (text, list_of_image_urls)."""
     lines = raw.split("\n")
-    if lines[0].strip().startswith("IMAGE:"):
-        image_url = lines[0].replace("IMAGE:", "").strip()
-        return "\n".join(lines[1:]).lstrip(), image_url
-    return raw, None
+    image_urls = []
+    text_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("IMAGE:"):
+            url = stripped.replace("IMAGE:", "").strip()
+            if url.startswith("http"):
+                image_urls.append(url)
+        else:
+            text_lines.append(line)
+
+    text = "\n".join(text_lines).strip()
+    return text, image_urls
 
 
 # ─── PROMPT BUILDING ─────────────────────────────────────────────────────────
 
 def _format_articles_for_prompt(articles: list, max_items: int = 8) -> str:
-    """Format scraped articles into a readable block for Claude."""
+    """Format scraped articles into a readable block for Claude, including image URLs."""
     if not articles:
         return "(Aucun article récent disponible)"
 
@@ -164,6 +116,8 @@ def _format_articles_for_prompt(articles: list, max_items: int = 8) -> str:
             line += f"\n  {a['summary'][:200]}"
         if a.get("url"):
             line += f"\n  URL: {a['url']}"
+        if a.get("image_url"):
+            line += f"\n  IMAGE: {a['image_url']}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -208,6 +162,15 @@ def _format_price_trends() -> str:
     return "\n".join(lines) if lines else "(Pas assez de données historiques)"
 
 
+def _collect_article_images(articles: list) -> list:
+    """Collect image URLs from scraped articles."""
+    images = []
+    for a in articles:
+        if a.get("image_url") and a["image_url"].startswith("http"):
+            images.append(a["image_url"])
+    return images
+
+
 # ─── CONTENT GENERATION ──────────────────────────────────────────────────────
 
 # Map source categories to scraper category names
@@ -215,6 +178,7 @@ _CATEGORY_TO_SOURCE = {
     "news_flash":      ["watch_media", "brand_sources", "events", "forums"],
     "market_signal":   ["market_analytics", "secondary_market"],
     "event_flash":     ["auctions", "events"],
+    "release_flash":   ["watch_media", "brand_sources"],
     "release":         ["watch_media", "brand_sources"],
     "discontinuation": ["watch_media", "forums", "secondary_market"],
     "market_update":   ["market_analytics", "secondary_market"],
@@ -224,7 +188,8 @@ _CATEGORY_TO_SOURCE = {
 
 
 def generate_message(slot: int, slot_type: str, max_retries: int = 2) -> list:
-    """Generate message(s) for a slot with retry logic. Returns list of (text, image_url, msg_type, category)."""
+    """Generate message(s) for a slot with retry logic.
+    Returns list of (text, image_urls, msg_type, category)."""
     for attempt in range(max_retries):
         result = _try_generate(slot, slot_type)
         if result:
@@ -235,7 +200,7 @@ def generate_message(slot: int, slot_type: str, max_retries: int = 2) -> list:
 
 
 def generate_specific(cat_key: str) -> list:
-    """Generate a message for a specific category (for testing). Returns list of (text, image_url, msg_type, category)."""
+    """Generate a message for a specific category (for testing)."""
     category = CATEGORIES.get(cat_key)
     if not category:
         log.error(f"Unknown category: {cat_key}")
@@ -254,7 +219,7 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
         return []
 
     msg_type = category["msg_type"]
-    is_flash = slot_type == "flash"
+    is_short = slot_type == "short"
 
     log.info(f"Generating [{msg_type}] {category['label']} for slot {slot}")
 
@@ -267,6 +232,9 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
     # Sort by priority (P1 first) then recency
     articles.sort(key=lambda a: (a.get("priority", "P3"), a.get("scraped_at", "")))
 
+    # Collect image URLs from scraped articles
+    scraped_images = _collect_article_images(articles)
+
     articles_text = _format_articles_for_prompt(articles)
     indices_text = _format_indices_for_prompt()
     trends_text = _format_price_trends()
@@ -275,10 +243,8 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
     has_articles = articles and articles_text != "(Aucun article récent disponible)"
 
     if has_articles:
-        # Use scraped data prompt
         prompt_template = category["prompt"]
     else:
-        # Fallback to web search prompt
         prompt_template = category.get("fallback_prompt", category["prompt"])
         log.info(f"No scraped articles for {cat_key} — falling back to web search")
 
@@ -302,32 +268,31 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
         topics_list = "\n".join(f"- {t}" for t in recent_topics)
         dedup_block = f"\nSUJETS DEJA COUVERTS RECEMMENT — ne pas aborder :\n{topics_list}\n"
 
-    # Type label
-    TYPE_LABELS = {
-        "NEWS":          "TYPE 5 — NEWS FLASH",
-        "FLASH":         "TYPE 6 — MARKET SIGNAL" if cat_key == "market_signal" else "TYPE 7 — EVENT FLASH",
-        "RELEASE":       "TYPE 1 — RELEASE",
-        "MARKET_UPDATE": "TYPE 2 — MARKET UPDATE",
-        "ANALYSIS":      "TYPE 3 — ANALYSIS",
-        "EVENT":         "TYPE 4 — EVENT",
-    }
-    type_label = TYPE_LABELS.get(msg_type, "TYPE 5 — NEWS FLASH")
+    # Slot type instructions
+    if is_short:
+        length_instruction = "Longueur : 40 a 100 mots. Message concis mais pas trop court. Un seul sujet. Ton humain de passionné."
+    else:
+        length_instruction = "Message détaillé, 150 a 350 mots. Ton humain de passionné. Donne ton avis."
 
     user_prompt += f"""
 
 Date actuelle : {now_str} — Informations entre le {date_limit} et le {date_today}.
 {dedup_block}
-FORMAT IMPOSE : {type_label} — aucun autre format n'est acceptable.
-{"Longueur : 25 a 60 mots maximum. Message court, direct, humanise. Un seul sujet." if is_flash else "Respecte strictement la structure et la longueur du format indique."}
+{length_instruction}
+
+IMAGES : Si des URLs d'images sont fournies dans les articles ci-dessus (lignes IMAGE:), inclus les 1-2 plus pertinentes en début de réponse au format :
+IMAGE: https://url-de-l-image.jpg
+IMAGE: https://autre-image.jpg (optionnel)
+
+Si tu utilises web_search et trouves une image pertinente (photo officielle, graphique), ajoute aussi IMAGE: url.
 
 Reponds UNIQUEMENT avec le message Telegram final, pret a etre publie.
-Premiere ligne optionnelle : IMAGE: https://... si image directe disponible.
 Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
 
     # ── API call ─────────────────────────────────────────────────────────
-    model = MODEL_FLASH if is_flash else MODEL_RICH
-    max_tok = 350 if is_flash else 1200
-    max_srch = 2 if is_flash else 4
+    model = MODEL_FLASH if is_short else MODEL_RICH
+    max_tok = 450 if is_short else 1500
+    max_srch = 2 if is_short else 4
 
     # Only use web search if no scraped articles (fallback mode)
     tools = []
@@ -347,7 +312,7 @@ Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
         response = client.messages.create(**kwargs)
         log.info(f"Model: {model} | max_tokens: {max_tok} | web_search: {bool(tools)}")
 
-        # Extract text from response — handle web_search responses too
+        # Extract text from response
         text_parts = []
         for b in response.content:
             if b.type == "text" and hasattr(b, "text"):
@@ -367,34 +332,37 @@ Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
             log_health_event("meta_commentary_blocked", f"Slot {slot}, cat={cat_key}")
             return []
 
-        if is_release_disguised_as_flash(raw, msg_type):
-            log.error("Release content in flash slot — blocked")
-            log_health_event("release_in_flash_blocked", f"Slot {slot}, cat={cat_key}")
+        if is_skip_response(raw):
+            log.info("Claude returned SKIP — no suitable content")
             return []
 
-        # ── Format output ────────────────────────────────────────────────
-        text, image_url = parse_image(raw)
-        header = category.get("header", "")
-        if header:
-            text = f"<b>{header}</b>\n\n{text}"
-        if image_url:
-            log.info(f"Image URL: {image_url[:70]}...")
-        log.info(f"Message generated ({msg_type}): {len(text)} chars")
+        # ── Extract images and text ──────────────────────────────────────
+        text, claude_images = parse_images_from_response(raw)
+
+        # Combine images: Claude's picks first, then scraped images as fallback
+        all_images = claude_images.copy()
+        for img in scraped_images:
+            if img not in all_images:
+                all_images.append(img)
+        # Keep max 2 images
+        image_urls = all_images[:2]
+
+        if image_urls:
+            log.info(f"Image URLs: {[u[:60] + '...' for u in image_urls]}")
+        else:
+            log.info("No image URLs found — message will be text-only")
+
+        log.info(f"Message generated ({msg_type}): {len(text)} chars, {len(image_urls)} images")
 
         # Record for anti-repetition
         body_lines = [l.strip() for l in text.split("\n") if l.strip()]
-        _header_kw = {"FLASH NEWS", "RELEASE", "MARKET UPDATE", "REPORT & ANALYSIS",
-                      "EVENT", "DISCONTINUATION", "SIGNAL"}
-        body_start = next(
-            (l for l in body_lines if not any(kw in l for kw in _header_kw)),
-            body_lines[0] if body_lines else ""
-        )
+        body_start = body_lines[0] if body_lines else ""
         summary = re.sub(r"<[^>]+>", "", body_start)[:120]
 
         if summary:
             record_sent_message(slot, cat_key, msg_type, summary, success=True)
 
-        return [(text, image_url, msg_type, cat_key)]
+        return [(text, image_urls, msg_type, cat_key)]
 
     except anthropic.APIError as e:
         log.error(f"Anthropic API error: {e}")

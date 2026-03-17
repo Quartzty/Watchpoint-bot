@@ -26,6 +26,7 @@ class Article:
     priority: str = "P2"
     published_at: str = None
     raw_html: str = None
+    image_url: str = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,6 +42,7 @@ class Article:
             priority=self.priority,
             published_at=self.published_at,
             raw_html=self.raw_html,
+            image_url=self.image_url,
         )
 
 
@@ -123,10 +125,34 @@ class RSSMixin:
             feed = feedparser.parse(url)
             for entry in feed.entries[:10]:  # Last 10 entries
                 summary = ""
+                image_url = None
+
                 if hasattr(entry, "summary"):
-                    # Strip HTML from summary
+                    # Strip HTML from summary but extract image first
                     soup = BeautifulSoup(entry.summary, "lxml")
+                    img = soup.find("img")
+                    if img and img.get("src"):
+                        image_url = img["src"]
                     summary = soup.get_text(strip=True)[:500]
+
+                # Try media:content (common in RSS feeds)
+                if not image_url and hasattr(entry, "media_content"):
+                    for media in entry.media_content:
+                        if media.get("medium") == "image" or media.get("type", "").startswith("image"):
+                            image_url = media.get("url")
+                            break
+
+                # Try media:thumbnail
+                if not image_url and hasattr(entry, "media_thumbnail"):
+                    if entry.media_thumbnail:
+                        image_url = entry.media_thumbnail[0].get("url")
+
+                # Try enclosures
+                if not image_url and hasattr(entry, "enclosures"):
+                    for enc in entry.enclosures:
+                        if enc.get("type", "").startswith("image"):
+                            image_url = enc.get("href") or enc.get("url")
+                            break
 
                 published = None
                 if hasattr(entry, "published"):
@@ -140,6 +166,7 @@ class RSSMixin:
                     source_category=self.category,
                     priority=priority,
                     published_at=published,
+                    image_url=image_url,
                 ))
         except Exception as e:
             log.warning(f"RSS parse error for {source_name}: {e}")
