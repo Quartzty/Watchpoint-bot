@@ -102,13 +102,16 @@ def is_release_disguised_as_flash(text: str, msg_type: str) -> bool:
     """Block detailed release content in flash slots."""
     if msg_type not in ("NEWS", "FLASH"):
         return False
-    if len(text) > 420:
-        log.warning(f"Flash too long ({len(text)} chars) — probably a release")
+    # Strip HTML tags before measuring length — markup inflates count significantly
+    plain = re.sub(r"<[^>]+>", "", text)
+    plain_len = len(plain)
+    if plain_len > 350:
+        log.warning(f"Flash too long ({plain_len} chars plain / {len(text)} raw) — probably a release")
         return True
     t = text.lower()
     hits = [ind for ind in _RELEASE_INDICATORS if ind in t]
-    if hits:
-        log.warning(f"Flash contains release indicators {hits} — blocked")
+    if len(hits) >= 2:
+        log.warning(f"Flash contains multiple release indicators {hits} — blocked")
         return True
     return False
 
