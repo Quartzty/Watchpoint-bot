@@ -206,9 +206,19 @@ def generate_message(slot: int, slot_type: str, max_retries: int = 2) -> list:
     return []
 
 
-def _try_generate(slot: int, slot_type: str) -> list:
+def generate_specific(cat_key: str) -> list:
+    """Generate a message for a specific category (for testing). Returns list of (text, image_url, msg_type, category)."""
+    category = CATEGORIES.get(cat_key)
+    if not category:
+        log.error(f"Unknown category: {cat_key}")
+        return []
+    slot_type = category["slot_type"]
+    return _try_generate(slot=99, slot_type=slot_type, force_category=cat_key)
+
+
+def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list:
     """Single attempt to generate message(s) for a slot."""
-    cat_key = pick_category(slot_type)
+    cat_key = force_category or pick_category(slot_type)
     category = CATEGORIES.get(cat_key)
 
     if not category:
