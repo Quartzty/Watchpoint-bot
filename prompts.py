@@ -172,21 +172,33 @@ CATEGORIES = {
 
 {articles}
 
-Sélectionne UN SEUL fait — le plus concret et impactant. PAS de release de montre (pas de fiche technique).
+RÈGLE CRITIQUE — SÉLECTION DU SUJET :
+❌ INTERDIT de parler d'une nouvelle montre, d'un lancement, d'un dévoilement, d'une release, d'une présentation de modèle.
+   Les mots "dévoile", "présente", "lance", "annonce [montre]", "nouveau modèle" = SUJET INTERDIT.
+❌ INTERDIT de parler de complications, calibres, mouvements, matériaux, dimensions.
+
+✅ SUJETS ACCEPTÉS : partenariat/collaboration, résultat financier, acquisition/rachat, record d'enchères,
+   ouverture/fermeture de boutique, nomination/départ de dirigeant, tendance marché, événement industrie,
+   polémique, contrefaçon, réglementation, classement/palmarès.
+
+Si AUCUN article ne correspond aux sujets acceptés, réponds uniquement : SKIP
 
 FORMAT STRICT TYPE 5 — NEWS FLASH :
 - Brève de 25 à 60 mots, ton humain, un seul sujet.
-- Structure : [EMOJI] <b>[titre court]</b> puis 1-2 phrases. Fin.
+- Structure : [EMOJI] <b>[titre court]</b> puis 1-2 phrases. Fin avec <i><a href="URL">Source</a></i>.
 - INTERDIT : calibre, réserve de marche, prix détaillés, analyse marché secondaire, liste de specs.""",
         "fallback_prompt": """Recherche sur le web l'actualité horlogère la plus notable de la semaine.
 
 Sources : Hodinkee, aBlogtoWatch, Monochrome Watches, WatchPro, SJX Watches, Fratello, WorldTempus, Bloomberg Luxury, Chrono24 News, fhs.ch.
 
-Sélectionne UN SEUL fait — le plus concret et impactant.
+RÈGLE CRITIQUE — SÉLECTION DU SUJET :
+❌ INTERDIT de parler d'une nouvelle montre, d'un lancement, d'un dévoilement, d'une release.
+✅ SUJETS ACCEPTÉS : partenariat, résultat financier, acquisition, record d'enchères, ouverture/fermeture boutique,
+   nomination/départ dirigeant, tendance marché, événement industrie, polémique, réglementation.
 
 FORMAT STRICT TYPE 5 — NEWS FLASH :
 - Brève de 25 à 60 mots, ton humain, un seul sujet.
-- Structure : [EMOJI] <b>[titre court]</b> puis 1-2 phrases. Fin.
+- Structure : [EMOJI] <b>[titre court]</b> puis 1-2 phrases. Fin avec <i><a href="URL">Source</a></i>.
 - INTERDIT : calibre, réserve de marche, prix détaillés, analyse marché secondaire, liste de specs.""",
     },
 

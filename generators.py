@@ -94,7 +94,16 @@ _RELEASE_INDICATORS = [
     "analyse watchpoint", "marché secondaire", "marche secondaire",
     "boîtier en", "boitier en", "diamètre mm", "mm de diamètre",
     "tirage limité", "exemplaires",
-    "source :", "<i>source",
+]
+
+# Words that strongly signal a release/launch announcement in a flash
+_RELEASE_VERBS = [
+    "dévoile", "devoile", "présente sa", "presente sa",
+    "présente son", "presente son", "lance sa ", "lance son ",
+    "lancé ", "nouveau modèle", "nouveau modele",
+    "nouvelle montre", "nouvelle référence", "nouvelle reference",
+    "nouvelle version", "complication légendaire", "complication revisit",
+    "édition limitée", "edition limitee",
 ]
 
 
@@ -102,17 +111,33 @@ def is_release_disguised_as_flash(text: str, msg_type: str) -> bool:
     """Block detailed release content in flash slots."""
     if msg_type not in ("NEWS", "FLASH"):
         return False
-    # Strip HTML tags before measuring length — markup inflates count significantly
-    plain = re.sub(r"<[^>]+>", "", text)
+
+    # Handle SKIP responses from Claude (no suitable non-release content found)
+    plain = re.sub(r"<[^>]+>", "", text).strip()
+    if plain.upper() == "SKIP":
+        log.info("Claude returned SKIP — no suitable flash content")
+        return True
+
+    # Strip HTML tags before measuring length
     plain_len = len(plain)
     if plain_len > 350:
         log.warning(f"Flash too long ({plain_len} chars plain / {len(text)} raw) — probably a release")
         return True
+
     t = text.lower()
+
+    # Check for release/launch verbs — a single strong signal is enough
+    verb_hits = [v for v in _RELEASE_VERBS if v in t]
+    if verb_hits:
+        log.warning(f"Flash contains release verbs {verb_hits} — blocked")
+        return True
+
+    # Check for technical spec indicators — need 2+ for these weaker signals
     hits = [ind for ind in _RELEASE_INDICATORS if ind in t]
     if len(hits) >= 2:
         log.warning(f"Flash contains multiple release indicators {hits} — blocked")
         return True
+
     return False
 
 
