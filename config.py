@@ -38,8 +38,8 @@ TIMEZONE = pytz.timezone(TZ_NAME)
 
 # ─── MODELS ──────────────────────────────────────────────────────────────────
 
-MODEL_FLASH = "claude-haiku-4-5-20251001"   # Cheaper model for short news flashes
-MODEL_RICH  = "claude-sonnet-4-20250514"    # Full model for detailed content
+MODEL_FLASH = "claude-sonnet-4-20250514"    # Sonnet for all messages — better quality + humanized tone
+MODEL_RICH  = "claude-sonnet-4-20250514"    # Sonnet for detailed content
 
 # ─── SCHEDULE ────────────────────────────────────────────────────────────────
 # 5 messages/jour — 3 Flash (courts) + 2 Rich (détaillés)

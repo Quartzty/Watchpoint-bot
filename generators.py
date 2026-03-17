@@ -120,7 +120,7 @@ def is_release_disguised_as_flash(text: str, msg_type: str) -> bool:
 
     # Strip HTML tags before measuring length
     plain_len = len(plain)
-    if plain_len > 350:
+    if plain_len > 500:
         log.warning(f"Flash too long ({plain_len} chars plain / {len(text)} raw) — probably a release")
         return True
 
@@ -326,7 +326,7 @@ Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
 
     # ── API call ─────────────────────────────────────────────────────────
     model = MODEL_FLASH if is_flash else MODEL_RICH
-    max_tok = 220 if is_flash else 850
+    max_tok = 350 if is_flash else 1200
     max_srch = 2 if is_flash else 4
 
     # Only use web search if no scraped articles (fallback mode)
