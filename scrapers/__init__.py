@@ -4,22 +4,22 @@ from scrapers.base import BaseScraper, RSSMixin
 from scrapers.market_analytics import MarketAnalyticsScraper
 from scrapers.watch_media import WatchMediaScraper
 from scrapers.secondary_market import SecondaryMarketScraper
-from scrapers.auctions import AuctionScraper
+from scrapers.auctions import AuctionsScraper
 from scrapers.industry import IndustryScraper
-from scrapers.brands import BrandScraper
-from scrapers.events import EventScraper
-from scrapers.forums import ForumScraper
-from scrapers.macro import MacroScraper
+from scrapers.brands import BrandsScraper
+from scrapers.events import EventsScraper
+from scrapers.forums import ForumsScraper
+from scrapers.macro import MacroIndicatorsScraper
 
 # Registry of all scrapers — instantiated in bot.py
 ALL_SCRAPERS = [
     MarketAnalyticsScraper,
     WatchMediaScraper,
     SecondaryMarketScraper,
-    AuctionScraper,
+    AuctionsScraper,
     IndustryScraper,
-    BrandScraper,
-    EventScraper,
-    ForumScraper,
-    MacroScraper,
+    BrandsScraper,
+    EventsScraper,
+    ForumsScraper,
+    MacroIndicatorsScraper,
 ]
