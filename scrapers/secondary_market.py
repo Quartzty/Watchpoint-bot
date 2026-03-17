@@ -129,7 +129,7 @@ class SecondaryMarketScraper(BaseScraper):
                 return articles
 
             # Look for listing count and hot items
-            listing_info = soup.find(re.compile("span|div", class_=re.compile("results|count|items", re.I)))
+            listing_info = soup.find(re.compile("span|div"), class_=re.compile("results|count|items", re.I))
             if listing_info:
                 count_text = listing_info.get_text(strip=True)
 

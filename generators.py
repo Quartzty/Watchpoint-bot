@@ -195,8 +195,19 @@ _CATEGORY_TO_SOURCE = {
 }
 
 
-def generate_message(slot: int, slot_type: str) -> list:
-    """Generate message(s) for a slot. Returns list of (text, image_url, msg_type, category)."""
+def generate_message(slot: int, slot_type: str, max_retries: int = 2) -> list:
+    """Generate message(s) for a slot with retry logic. Returns list of (text, image_url, msg_type, category)."""
+    for attempt in range(max_retries):
+        result = _try_generate(slot, slot_type)
+        if result:
+            return result
+        if attempt < max_retries - 1:
+            log.warning(f"Attempt {attempt + 1} failed for slot {slot} — retrying with new category")
+    return []
+
+
+def _try_generate(slot: int, slot_type: str) -> list:
+    """Single attempt to generate message(s) for a slot."""
     cat_key = pick_category(slot_type)
     category = CATEGORIES.get(cat_key)
 
@@ -298,11 +309,18 @@ Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
         response = client.messages.create(**kwargs)
         log.info(f"Model: {model} | max_tokens: {max_tok} | web_search: {bool(tools)}")
 
-        raw = "".join(b.text for b in response.content if b.type == "text").strip()
+        # Extract text from response — handle web_search responses too
+        text_parts = []
+        for b in response.content:
+            if b.type == "text" and hasattr(b, "text"):
+                text_parts.append(b.text)
+        raw = "".join(text_parts).strip()
 
         if not raw:
-            log.warning("Empty response from Claude")
-            log_health_event("generation_empty", f"Slot {slot}, cat={cat_key}")
+            block_types = [b.type for b in response.content]
+            log.warning(f"Empty text from Claude. Content block types: {block_types}")
+            log.warning(f"Stop reason: {response.stop_reason}")
+            log_health_event("generation_empty", f"Slot {slot}, cat={cat_key}, blocks={block_types}")
             return []
 
         # ── Quality filters ──────────────────────────────────────────────

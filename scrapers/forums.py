@@ -19,10 +19,15 @@ class ForumsScraper(BaseScraper):
     category = "forums"
     display_name = "Forums"
 
-    # Reddit subreddits
-    REDDIT_WATCHES_JSON = "https://www.reddit.com/r/Watches/hot.json"
-    REDDIT_WATCH_EXCHANGE_JSON = "https://www.reddit.com/r/WatchExchange/hot.json"
-    REDDIT_ROLEX_JSON = "https://www.reddit.com/r/Rolex/hot.json"
+    # Reddit subreddits (use old.reddit.com to avoid blocking)
+    REDDIT_WATCHES_JSON = "https://old.reddit.com/r/Watches/hot.json?limit=10"
+    REDDIT_WATCH_EXCHANGE_JSON = "https://old.reddit.com/r/WatchExchange/hot.json?limit=10"
+    REDDIT_ROLEX_JSON = "https://old.reddit.com/r/Rolex/hot.json?limit=10"
+
+    def __init__(self):
+        super().__init__()
+        # Reddit requires a descriptive User-Agent
+        self.client.headers["User-Agent"] = "WatchpointBot/2.0 (market intelligence bot; +https://watchpoint.fr)"
 
     # Forum URLs
     WATCHUSEEK_URL = "https://www.watchuseek.com"

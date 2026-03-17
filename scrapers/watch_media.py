@@ -29,6 +29,7 @@ class WatchMediaScraper(BaseScraper, RSSMixin):
         ("aBlogtoWatch", "https://www.ablogtowatch.com/feed/"),
         ("Worn & Wound", "https://www.wornandwound.com/feed/"),
         ("Watch Collecting Lifestyle", "https://www.watchcollectinglifestyle.com/feed/"),
+        ("All Watch News", "https://allwatchnews.com/feed/"),
     ]
 
     def scrape(self) -> list[Article]:

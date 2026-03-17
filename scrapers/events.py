@@ -143,6 +143,7 @@ class EventsScraper(BaseScraper):
                 class_=re.compile("award|finalist|competition|news", re.I)
             )
 
+            items = []
             if awards_section:
                 items = awards_section.find_all(["article", "div"])[:5]
 
