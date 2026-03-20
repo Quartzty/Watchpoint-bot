@@ -3,16 +3,23 @@ Base scraper class and mixins for Watchpoint source scraping.
 
 Every scraper inherits from BaseScraper and implements scrape().
 It returns a list of Article dicts that get stored in the database.
+
+Includes source health tracking: disabled sources are skipped,
+successes/failures are recorded, and broken sources are auto-disabled.
 """
 
 import time
 import hashlib
 import httpx
+from urllib.parse import urlparse
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 from bs4 import BeautifulSoup
 from config import SCRAPE_REQUEST_TIMEOUT, SCRAPE_DELAY_BETWEEN, USER_AGENT, log
-from database import store_article, store_price_index, store_watch_price
+from database import (
+    store_article, store_price_index, store_watch_price,
+    record_source_success, record_source_failure, is_source_disabled,
+)
 
 
 @dataclass
@@ -46,6 +53,15 @@ class Article:
         )
 
 
+def _source_name_for_url(display_name: str, url: str) -> str:
+    """Derive a source label from display name + domain for health tracking."""
+    try:
+        domain = urlparse(url).netloc.replace("www.", "")
+    except Exception:
+        domain = url[:50]
+    return f"{display_name}/{domain}"
+
+
 class BaseScraper:
     """Base class for all Watchpoint scrapers."""
 
@@ -62,7 +78,7 @@ class BaseScraper:
             },
             follow_redirects=True,
         )
-        self._stats = {"fetched": 0, "new": 0, "errors": 0}
+        self._stats = {"fetched": 0, "new": 0, "errors": 0, "skipped_disabled": 0}
 
     def scrape(self) -> list[Article]:
         """Override this. Scrape all sources in this category, return Articles."""
@@ -70,7 +86,7 @@ class BaseScraper:
 
     def run(self) -> dict:
         """Run the scraper, store results, return stats."""
-        self._stats = {"fetched": 0, "new": 0, "errors": 0}
+        self._stats = {"fetched": 0, "new": 0, "errors": 0, "skipped_disabled": 0}
         try:
             articles = self.scrape()
             for article in articles:
@@ -83,25 +99,52 @@ class BaseScraper:
         return self._stats
 
     def fetch_html(self, url: str) -> Optional[BeautifulSoup]:
-        """Fetch a page and return parsed HTML. Returns None on error."""
+        """Fetch a page and return parsed HTML. Returns None on error.
+        Tracks source health: skips disabled sources, records success/failure."""
+        source_label = _source_name_for_url(self.display_name, url)
+
+        # Check if source is disabled
+        if is_source_disabled(source_label):
+            log.info(f"[{self.display_name}] Skipping disabled source: {url}")
+            self._stats["skipped_disabled"] += 1
+            return None
+
         try:
             r = self.client.get(url)
             r.raise_for_status()
+            record_source_success(source_label, url)
             return BeautifulSoup(r.text, "lxml")
         except Exception as e:
             log.warning(f"[{self.display_name}] Failed to fetch {url}: {e}")
             self._stats["errors"] += 1
+            just_disabled = record_source_failure(source_label, url, str(e)[:200])
+            if just_disabled:
+                log.warning(f"⚠️ Source {source_label} DÉSACTIVÉE après échecs répétés")
             return None
 
     def fetch_json(self, url: str) -> Optional[dict]:
-        """Fetch a JSON endpoint. Returns None on error."""
+        """Fetch a JSON endpoint. Returns None on error.
+        Tracks source health: skips disabled sources, records success/failure."""
+        source_label = _source_name_for_url(self.display_name, url)
+
+        # Check if source is disabled
+        if is_source_disabled(source_label):
+            log.info(f"[{self.display_name}] Skipping disabled source: {url}")
+            self._stats["skipped_disabled"] += 1
+            return None
+
         try:
             r = self.client.get(url)
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            record_source_success(source_label, url)
+            return data
         except Exception as e:
             log.warning(f"[{self.display_name}] Failed to fetch JSON {url}: {e}")
             self._stats["errors"] += 1
+            just_disabled = record_source_failure(source_label, url, str(e)[:200])
+            if just_disabled:
+                log.warning(f"⚠️ Source {source_label} DÉSACTIVÉE après échecs répétés")
             return None
 
     def delay(self):
@@ -117,12 +160,34 @@ class RSSMixin:
     """Mixin for scrapers that consume RSS/Atom feeds."""
 
     def parse_rss(self, url: str, source_name: str, priority: str = "P2") -> list[Article]:
-        """Parse an RSS feed and return Article objects."""
+        """Parse an RSS feed and return Article objects.
+        Tracks source health via the feed's bozo flag and parse errors."""
         import feedparser
+
+        source_label = _source_name_for_url(self.display_name, url)
+
+        # Check if source is disabled
+        if is_source_disabled(source_label):
+            log.info(f"[{self.display_name}] Skipping disabled RSS: {source_name}")
+            self._stats["skipped_disabled"] += 1
+            return []
 
         articles = []
         try:
             feed = feedparser.parse(url)
+
+            # Check for parse errors
+            if feed.bozo and not feed.entries:
+                error_msg = str(feed.bozo_exception)[:200] if hasattr(feed, 'bozo_exception') else "RSS parse error"
+                log.warning(f"RSS bozo error for {source_name}: {error_msg}")
+                just_disabled = record_source_failure(source_label, url, error_msg)
+                if just_disabled:
+                    log.warning(f"⚠️ RSS {source_label} DÉSACTIVÉE après échecs répétés")
+                return []
+
+            # Success — record it
+            record_source_success(source_label, url)
+
             for entry in feed.entries[:10]:  # Last 10 entries
                 summary = ""
                 image_url = None
@@ -170,5 +235,6 @@ class RSSMixin:
                 ))
         except Exception as e:
             log.warning(f"RSS parse error for {source_name}: {e}")
+            record_source_failure(source_label, url, str(e)[:200])
 
         return articles

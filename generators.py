@@ -68,13 +68,91 @@ _META_PHRASES = [
     "dans la plage de dates",
     "je n'ai pas trouvé", "mes recherches n'ont",
     "aucun résultat pertinent",
+    "malheureusement", "je n'ai pas pu",
+    "il semble qu'aucune", "aucune information récente",
+    "je ne dispose pas", "les sources disponibles",
+    "il m'est difficile de", "je manque de données",
+    "mes capacités ne me permettent", "en tant qu'assistant",
+    "en tant qu'ia", "je suis un modèle",
+    "mes connaissances s'arrêtent", "au-delà de mes capacités",
 ]
+
+_IA_WARNING_PHRASES = [
+    "témoigne de l'excellence", "dans un contexte de marché en mutation",
+    "un signal fort que", "cette pièce incarne",
+    "illustre parfaitement", "vient confirmer la tendance",
+    "s'inscrit dans une dynamique", "démontre une fois de plus",
+    "constitue un tournant", "marque un jalon",
+    "force est de constater", "il convient de noter",
+    "il est intéressant de noter", "il est à noter que",
+    "sans surprise", "comme on pouvait s'y attendre",
+]
+
+
+# ─── LENGTH ENFORCEMENT ─────────────────────────────────────────────────────
+
+# Max chars per slot type
+_MAX_CHARS_SHORT = 500
+_MAX_CHARS_RICH = 1400
+
+
+def is_too_long(text: str, slot_type: str) -> bool:
+    """Check if a message exceeds character limits."""
+    limit = _MAX_CHARS_SHORT if slot_type == "short" else _MAX_CHARS_RICH
+    # Count chars excluding HTML tags
+    plain = re.sub(r"<[^>]+>", "", text)
+    return len(plain) > limit
+
+
+def truncate_message(text: str, slot_type: str) -> str:
+    """Truncate message to character limit, cutting at last sentence boundary."""
+    limit = _MAX_CHARS_SHORT if slot_type == "short" else _MAX_CHARS_RICH
+    plain = re.sub(r"<[^>]+>", "", text)
+    if len(plain) <= limit:
+        return text
+
+    # Find last sentence end before limit
+    truncated = plain[:limit]
+    last_period = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+    if last_period > limit * 0.5:
+        # Rebuild from original text up to that point
+        # Count plain chars to find corresponding position in HTML text
+        plain_count = 0
+        html_pos = 0
+        target = last_period + 1
+        in_tag = False
+        for i, ch in enumerate(text):
+            if ch == "<":
+                in_tag = True
+            elif ch == ">":
+                in_tag = False
+                html_pos = i + 1
+                continue
+            if not in_tag:
+                plain_count += 1
+                if plain_count >= target:
+                    html_pos = i + 1
+                    break
+
+        text = text[:html_pos].rstrip()
+
+    log.warning(f"Message truncated: {len(plain)} -> ~{limit} chars")
+    return text
 
 
 def is_meta_commentary(text: str) -> bool:
     """Block messages where Claude talks about its own process."""
     t = text.lower()
     return any(phrase in t for phrase in _META_PHRASES)
+
+
+def check_ia_warning(text: str) -> list:
+    """Check for soft IA markers (logged but not blocked)."""
+    t = text.lower()
+    found = [p for p in _IA_WARNING_PHRASES if p in t]
+    if found:
+        log.warning(f"IA warning phrases detected: {found}")
+    return found
 
 
 def is_skip_response(text: str) -> bool:
@@ -175,11 +253,11 @@ def _collect_article_images(articles: list) -> list:
 
 # Map source categories to scraper category names
 _CATEGORY_TO_SOURCE = {
-    "news_flash":      ["watch_media", "brand_sources", "events", "forums"],
+    "news_flash":      ["watch_media", "events", "forums"],
     "market_signal":   ["market_analytics", "secondary_market"],
     "event_flash":     ["auctions", "events"],
-    "release_flash":   ["watch_media", "brand_sources"],
-    "release":         ["watch_media", "brand_sources"],
+    "release_flash":   ["watch_media"],
+    "release":         ["watch_media"],
     "discontinuation": ["watch_media", "forums", "secondary_market"],
     "market_update":   ["market_analytics", "secondary_market"],
     "analysis":        ["industry_research", "macro_indicators"],
@@ -270,9 +348,9 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
 
     # Slot type instructions
     if is_short:
-        length_instruction = "Longueur : 40 a 100 mots. Message concis mais pas trop court. Un seul sujet. Ton humain de passionné."
+        length_instruction = "LONGUEUR MAX : 350-500 caractères (hors HTML). Court, percutant, un seul sujet."
     else:
-        length_instruction = "Message détaillé, 150 a 350 mots. Ton humain de passionné. Donne ton avis."
+        length_instruction = "LONGUEUR MAX : 500-1400 caractères (hors HTML). Détaillé mais concis. Ton humain."
 
     user_prompt += f"""
 
@@ -280,18 +358,13 @@ Date actuelle : {now_str} — Informations entre le {date_limit} et le {date_tod
 {dedup_block}
 {length_instruction}
 
-IMAGES : Si des URLs d'images sont fournies dans les articles ci-dessus (lignes IMAGE:), inclus les 1-2 plus pertinentes en début de réponse au format :
-IMAGE: https://url-de-l-image.jpg
-IMAGE: https://autre-image.jpg (optionnel)
+Si des URLs d'images sont fournies (lignes IMAGE:), inclus la plus pertinente en début de réponse : IMAGE: url
 
-Si tu utilises web_search et trouves une image pertinente (photo officielle, graphique), ajoute aussi IMAGE: url.
-
-Reponds UNIQUEMENT avec le message Telegram final, pret a etre publie.
-Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
+Reponds UNIQUEMENT avec le message Telegram final. Aucun commentaire sur tes recherches."""
 
     # ── API call ─────────────────────────────────────────────────────────
     model = MODEL_FLASH if is_short else MODEL_RICH
-    max_tok = 450 if is_short else 1500
+    max_tok = 300 if is_short else 800
     max_srch = 2 if is_short else 4
 
     # Only use web search if no scraped articles (fallback mode)
@@ -336,8 +409,15 @@ Aucun commentaire. Aucune explication. Aucune mention de tes recherches."""
             log.info("Claude returned SKIP — no suitable content")
             return []
 
+        # ── IA warning check (soft — log only) ───────────────────────────
+        check_ia_warning(raw)
+
         # ── Extract images and text ──────────────────────────────────────
         text, claude_images = parse_images_from_response(raw)
+
+        # ── Length enforcement ─────────────────────────────────────────
+        if is_too_long(text, slot_type):
+            text = truncate_message(text, slot_type)
 
         # Combine images: Claude's picks first, then scraped images as fallback
         all_images = claude_images.copy()

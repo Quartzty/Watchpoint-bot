@@ -96,6 +96,20 @@ def init_db():
             created_at TEXT NOT NULL
         );
 
+        -- Source health tracking (auto-disable broken sources)
+        CREATE TABLE IF NOT EXISTS source_health (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            consecutive_failures INTEGER DEFAULT 0,
+            last_success TEXT,
+            last_failure TEXT,
+            last_error TEXT,
+            disabled INTEGER DEFAULT 0,
+            disabled_at TEXT,
+            UNIQUE(source_name)
+        );
+
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(source_category);
         CREATE INDEX IF NOT EXISTS idx_articles_scraped ON articles(scraped_at);
@@ -358,5 +372,115 @@ def get_health_events_today() -> list:
         WHERE created_at LIKE ?
         ORDER BY created_at ASC
     """, (f"{today}%",)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ─── SOURCE HEALTH TRACKING ─────────────────────────────────────────────────
+
+MAX_CONSECUTIVE_FAILURES = 3
+AUTO_REENABLE_HOURS = 6
+
+
+def record_source_success(source_name: str, source_url: str):
+    """Record a successful fetch for a source. Resets failure count."""
+    conn = get_db()
+    now = datetime.now(TIMEZONE).isoformat()
+    conn.execute("""
+        INSERT INTO source_health (source_name, source_url, consecutive_failures, last_success, disabled)
+        VALUES (?, ?, 0, ?, 0)
+        ON CONFLICT(source_name) DO UPDATE SET
+            consecutive_failures = 0,
+            last_success = ?,
+            source_url = ?
+    """, (source_name, source_url, now, now, source_url))
+    conn.commit()
+    conn.close()
+
+
+def record_source_failure(source_name: str, source_url: str, error: str) -> bool:
+    """Record a failed fetch. Returns True if source was just disabled."""
+    conn = get_db()
+    now = datetime.now(TIMEZONE).isoformat()
+
+    # Upsert: increment failure count
+    conn.execute("""
+        INSERT INTO source_health (source_name, source_url, consecutive_failures, last_failure, last_error)
+        VALUES (?, ?, 1, ?, ?)
+        ON CONFLICT(source_name) DO UPDATE SET
+            consecutive_failures = consecutive_failures + 1,
+            last_failure = ?,
+            last_error = ?,
+            source_url = ?
+    """, (source_name, source_url, now, error, now, error, source_url))
+    conn.commit()
+
+    # Check if we should disable
+    row = conn.execute(
+        "SELECT consecutive_failures, disabled FROM source_health WHERE source_name = ?",
+        (source_name,)
+    ).fetchone()
+    conn.close()
+
+    if row and row["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES and not row["disabled"]:
+        _disable_source(source_name)
+        log_health_event("source_disabled", f"{source_name} désactivée après {MAX_CONSECUTIVE_FAILURES} échecs consécutifs ({error})")
+        return True
+
+    return False
+
+
+def _disable_source(source_name: str):
+    """Disable a source after too many failures."""
+    conn = get_db()
+    now = datetime.now(TIMEZONE).isoformat()
+    conn.execute("""
+        UPDATE source_health SET disabled = 1, disabled_at = ? WHERE source_name = ?
+    """, (now, source_name))
+    conn.commit()
+    conn.close()
+
+
+def is_source_disabled(source_name: str) -> bool:
+    """Check if a source is currently disabled. Auto-re-enables after AUTO_REENABLE_HOURS."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT disabled, disabled_at FROM source_health WHERE source_name = ?",
+        (source_name,)
+    ).fetchone()
+    conn.close()
+
+    if not row or not row["disabled"]:
+        return False
+
+    # Auto re-enable after timeout
+    if row["disabled_at"]:
+        disabled_at = datetime.fromisoformat(row["disabled_at"])
+        now = datetime.now(TIMEZONE)
+        if (now - disabled_at) > timedelta(hours=AUTO_REENABLE_HOURS):
+            # Re-enable
+            conn = get_db()
+            conn.execute("""
+                UPDATE source_health SET disabled = 0, consecutive_failures = 0 WHERE source_name = ?
+            """, (source_name,))
+            conn.commit()
+            conn.close()
+            log.info(f"Source {source_name} auto-ré-activée après {AUTO_REENABLE_HOURS}h")
+            log_health_event("source_reenabled", f"{source_name} auto-ré-activée après {AUTO_REENABLE_HOURS}h")
+            return False
+
+    return True
+
+
+def get_broken_sources() -> list:
+    """Get all sources that are currently disabled or have recent failures."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT source_name, source_url, consecutive_failures, last_success, last_failure,
+               last_error, disabled, disabled_at
+        FROM source_health
+        WHERE disabled = 1 OR consecutive_failures >= ?
+        ORDER BY disabled DESC, consecutive_failures DESC
+    """, (MAX_CONSECUTIVE_FAILURES,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]

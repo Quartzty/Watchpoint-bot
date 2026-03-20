@@ -1,8 +1,7 @@
 """
 Watch media scraper for Watchpoint.
 
-Sources: Hodinkee, WatchPro, SJX, Fratello, Monochrome, Revolution,
-Time and Tide, aBlogtoWatch, Worn & Wound, Watch Collecting Lifestyle.
+Sources: Hodinkee, WatchPro, Fratello, Monochrome, Worn & Wound, All Watch News.
 
 Uses RSS feeds for content discovery.
 """
@@ -21,14 +20,9 @@ class WatchMediaScraper(BaseScraper, RSSMixin):
     RSS_SOURCES = [
         ("Hodinkee", "https://www.hodinkee.com/feed"),
         ("WatchPro", "https://www.watchpro.com/feed/"),
-        ("SJX Watches", "https://www.watchesbysjx.com/feeds/posts/default"),
         ("Fratello Watches", "https://www.fratellowatches.com/feed/"),
         ("Monochrome", "https://www.monochrome-watches.com/feed/"),
-        ("Revolution", "https://www.revolutionwatch.com/feed/"),
-        ("Time and Tide", "https://www.timeandtidewatches.com/feed/"),
-        ("aBlogtoWatch", "https://www.ablogtowatch.com/feed/"),
         ("Worn & Wound", "https://www.wornandwound.com/feed/"),
-        ("Watch Collecting Lifestyle", "https://www.watchcollectinglifestyle.com/feed/"),
         ("All Watch News", "https://allwatchnews.com/feed/"),
     ]
 

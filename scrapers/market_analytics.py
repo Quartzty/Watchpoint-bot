@@ -1,8 +1,7 @@
 """
 Market analytics scraper for Watchpoint.
 
-Sources: WatchCharts, Chrono24 ChronoPulse, Subdial, EveryWatch, WatchSignals API,
-WatchAnalytics, Watchy.
+Sources: WatchCharts, Subdial, EveryWatch, WatchSignals API, WatchAnalytics, Watchy.
 
 Extracts price indices and market sentiment data.
 """
@@ -22,7 +21,6 @@ class MarketAnalyticsScraper(BaseScraper, RSSMixin):
 
     # Source URLs
     WATCHCHARTS_URL = "https://www.watchcharts.com"
-    CHRONO24_CHRONOPULSE_URL = "https://www.chrono24.com/chronopulse.htm"
     SUBDIAL_MARKET_URL = "https://subdial.com/market"
     EVERYWATCH_URL = "https://everywatch.com"
     WATCHSIGNALS_API_URL = "https://watchsignals.com/api/indices"
@@ -35,10 +33,6 @@ class MarketAnalyticsScraper(BaseScraper, RSSMixin):
 
         # WatchCharts - main index
         articles.extend(self._scrape_watchcharts())
-        self.delay()
-
-        # Chrono24 ChronoPulse
-        articles.extend(self._scrape_chrono24_chronopulse())
         self.delay()
 
         # Subdial Market
@@ -96,42 +90,6 @@ class MarketAnalyticsScraper(BaseScraper, RSSMixin):
                 ))
         except Exception as e:
             log.warning(f"[{self.display_name}] WatchCharts error: {e}")
-
-        return articles
-
-    def _scrape_chrono24_chronopulse(self) -> list[Article]:
-        """Scrape Chrono24 ChronoPulse data."""
-        articles = []
-        try:
-            soup = self.fetch_html(self.CHRONO24_CHRONOPULSE_URL)
-            if not soup:
-                return articles
-
-            # Look for price pulse/index sections
-            pulse_div = soup.find("div", class_=re.compile("pulse|index|sentiment", re.I))
-            if pulse_div:
-                title = "Chrono24 ChronoPulse — Market Sentiment"
-                summary = pulse_div.get_text(strip=True)[:500]
-
-                # Extract numeric indicator if present
-                numbers = re.findall(r'\d+\.?\d*', summary)
-                if numbers:
-                    try:
-                        value = float(numbers[0])
-                        store_price_index("chrono24_pulse", "Chrono24", value)
-                    except (ValueError, IndexError):
-                        pass
-
-                articles.append(Article(
-                    url=self.CHRONO24_CHRONOPULSE_URL,
-                    title=title,
-                    summary=summary,
-                    source_name="Chrono24",
-                    source_category=self.category,
-                    priority="P1",
-                ))
-        except Exception as e:
-            log.warning(f"[{self.display_name}] Chrono24 ChronoPulse error: {e}")
 
         return articles
 

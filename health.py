@@ -8,7 +8,7 @@ Sends a daily health report to the admin private chat.
 
 from datetime import datetime
 from config import TIMEZONE, ADMIN_CHAT_ID, log
-from database import get_health_events_today, get_fired_slots_today, get_db
+from database import get_health_events_today, get_fired_slots_today, get_db, get_broken_sources
 from telegram import send_admin
 
 
@@ -65,11 +65,25 @@ def daily_health_report():
     for ev in events:
         error_lines.append(f"  ⚠️ [{ev['event_type']}] {ev['message'][:100]}")
 
+    # ── Broken / disabled sources ────────────────────────────────────────
+    broken = get_broken_sources()
+    broken_lines = []
+    for src in broken:
+        status = "🔴 DÉSACTIVÉE" if src["disabled"] else f"⚠️ {src['consecutive_failures']} échecs"
+        since = ""
+        if src["disabled_at"]:
+            since = f" (depuis {src['disabled_at'][:16]})"
+        elif src["last_failure"]:
+            since = f" (dernier échec {src['last_failure'][:16]})"
+        error_preview = f" — {src['last_error'][:60]}" if src.get("last_error") else ""
+        broken_lines.append(f"  {status} {src['source_name']}{since}{error_preview}")
+
     # ── Build report ─────────────────────────────────────────────────────
     nl = "\n"
     slots_block = nl.join(slots_status)
     scrape_block = nl.join(scrape_lines) if scrape_lines else "  (aucun scraping aujourd'hui)"
     errors_block = nl.join(error_lines)
+    broken_block = nl.join(broken_lines)
 
     report = f"""<b>📊 WATCHPOINT — Rapport quotidien</b>
 <b>{now.strftime('%A %d %B %Y')}</b>
@@ -85,13 +99,19 @@ def daily_health_report():
   Articles collectés : <b>{articles_today}</b>
 {scrape_block}"""
 
+    if broken_lines:
+        report += f"""
+
+<b>🔧 Sources en panne</b>
+{broken_block}"""
+
     if error_lines:
         report += f"""
 
 <b>Alertes</b>
 {errors_block}"""
 
-    if not error_lines and sent_fail == 0:
+    if not error_lines and not broken_lines and sent_fail == 0:
         report += "\n\n✅ Aucune erreur aujourd'hui."
 
     # ── Send ─────────────────────────────────────────────────────────────

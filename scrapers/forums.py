@@ -1,7 +1,7 @@
 """
 Forums scraper for Watchpoint.
 
-Sources: Reddit r/Watches, r/WatchExchange, r/Rolex (via JSON API),
+Sources: Reddit r/Watches, r/Rolex (via JSON API),
 WatchUSeek, Rolex Forums.
 
 Tracks trending discussions and community insights.
@@ -21,7 +21,6 @@ class ForumsScraper(BaseScraper):
 
     # Reddit subreddits (use old.reddit.com to avoid blocking)
     REDDIT_WATCHES_JSON = "https://old.reddit.com/r/Watches/hot.json?limit=10"
-    REDDIT_WATCH_EXCHANGE_JSON = "https://old.reddit.com/r/WatchExchange/hot.json?limit=10"
     REDDIT_ROLEX_JSON = "https://old.reddit.com/r/Rolex/hot.json?limit=10"
 
     def __init__(self):
@@ -39,10 +38,6 @@ class ForumsScraper(BaseScraper):
 
         # Reddit r/Watches
         articles.extend(self._scrape_reddit_watches())
-        self.delay()
-
-        # Reddit r/WatchExchange
-        articles.extend(self._scrape_reddit_watch_exchange())
         self.delay()
 
         # Reddit r/Rolex
@@ -92,38 +87,6 @@ class ForumsScraper(BaseScraper):
                 ))
         except Exception as e:
             log.warning(f"[{self.display_name}] Reddit r/Watches error: {e}")
-
-        return articles
-
-    def _scrape_reddit_watch_exchange(self) -> list[Article]:
-        """Scrape Reddit r/WatchExchange hot posts."""
-        articles = []
-        try:
-            data = self.fetch_json(self.REDDIT_WATCH_EXCHANGE_JSON)
-            if not data or "data" not in data:
-                return articles
-
-            posts = data["data"]["children"][:10]
-
-            for post_wrapper in posts:
-                post = post_wrapper.get("data", {})
-                title = post.get("title", "")
-                url = post.get("url", "")
-                selftext = post.get("selftext", "")[:300]
-                score = post.get("score", 0)
-
-                summary = selftext or f"Activity: {score} engagement points"
-
-                articles.append(Article(
-                    url=url,
-                    title=title,
-                    summary=summary,
-                    source_name="Reddit r/WatchExchange",
-                    source_category=self.category,
-                    priority="P3",  # Secondary market focused
-                ))
-        except Exception as e:
-            log.warning(f"[{self.display_name}] Reddit r/WatchExchange error: {e}")
 
         return articles
 
