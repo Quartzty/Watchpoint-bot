@@ -523,16 +523,29 @@ def _disable_source(source_name: str):
     conn.close()
 
 
-def is_source_disabled(source_name: str) -> bool:
-    """Check if a source is currently disabled. Auto-re-enables after AUTO_REENABLE_HOURS."""
+def is_source_disabled(source_name: str, source_url: str = None) -> bool:
+    """Check if a source is currently disabled. Auto-re-enables after
+    AUTO_REENABLE_HOURS, or at once when its URL changed (a fixed address
+    must not wait for the timeout of the broken one)."""
     conn = get_db()
     row = conn.execute(
-        "SELECT disabled, disabled_at FROM source_health WHERE source_name = ?",
+        "SELECT disabled, disabled_at, source_url FROM source_health WHERE source_name = ?",
         (source_name,)
     ).fetchone()
     conn.close()
 
     if not row or not row["disabled"]:
+        return False
+
+    if source_url and row["source_url"] and row["source_url"] != source_url:
+        conn = get_db()
+        conn.execute("""
+            UPDATE source_health SET disabled = 0, consecutive_failures = 0, source_url = ?
+            WHERE source_name = ?
+        """, (source_url, source_name))
+        conn.commit()
+        conn.close()
+        log.info(f"Source {source_name} ré-activée : nouvelle adresse {source_url}")
         return False
 
     # Auto re-enable after timeout

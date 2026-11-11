@@ -86,10 +86,12 @@ def check_models() -> bool:
 
 # ─── CATEGORY SELECTION ──────────────────────────────────────────────────────
 
-def pick_category(slot_type: str) -> str:
-    """Pick a category using weighted rotation that avoids repeating recent choices."""
+def pick_category(slot_type: str, exclude=()) -> str:
+    """Pick a category using weighted rotation that avoids repeating recent
+    choices. Categories in `exclude` (already tried for this slot) are skipped."""
     if slot_type == "short":
-        return random.choice(SHORT_CATEGORIES)
+        options = [c for c in SHORT_CATEGORIES if c not in exclude] or list(SHORT_CATEGORIES)
+        return random.choice(options)
 
     # Rich: weighted rotation with recency penalty
     recent = get_recent_categories(days=3)
@@ -97,9 +99,13 @@ def pick_category(slot_type: str) -> str:
 
     weights = {}
     for cat, base_weight in RICH_WEIGHTS.items():
+        if cat in exclude:
+            continue
         count = recent_cats.count(cat)
         penalty = max(0.5, base_weight * (0.5 ** count))
         weights[cat] = penalty
+    if not weights:
+        weights = dict(RICH_WEIGHTS)
 
     categories = list(weights.keys())
     w = [weights[c] for c in categories]
@@ -449,14 +455,19 @@ _CATEGORY_TO_SOURCE = {
 }
 
 
-def generate_message(slot: int, slot_type: str, max_retries: int = 2) -> list:
-    """Generate message(s) for a slot with retry logic. Returns a list of Post."""
+def generate_message(slot: int, slot_type: str, max_retries: int = 3) -> list:
+    """Generate message(s) for a slot with retry logic. Returns a list of Post.
+    Each retry uses a category not tried yet for this slot."""
+    tried = []
     for attempt in range(max_retries):
-        result = _try_generate(slot, slot_type)
+        cat_key = pick_category(slot_type, exclude=tried)
+        tried.append(cat_key)
+        result = _try_generate(slot, slot_type, force_category=cat_key)
         if result:
             return result
         if attempt < max_retries - 1:
-            log.warning(f"Attempt {attempt + 1} failed for slot {slot} — retrying with new category")
+            log.warning(f"Attempt {attempt + 1} failed for slot {slot} ({cat_key}) "
+                        f"— retrying with another category")
     return []
 
 
@@ -662,6 +673,7 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
 
     try:
         selected, pages = [], {}
+        use_web = not has_articles
 
         if has_articles:
             fill = {"indices": indices_text, "price_trends": trends_text}
@@ -669,21 +681,26 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
             selected = select_articles(
                 category["prompt"].format(articles=articles_text, **fill) + context, id_map, model)
             if not selected:
-                log.info("Claude returned SKIP at selection — no suitable article")
-                return []
-            log.info(f"Article chosen: {[a['title'][:60] for a in selected]}")
+                # None of the scraped articles fits this format (e.g. only
+                # new watches for a news flash): search the web instead of
+                # giving up the slot.
+                log.info(f"No suitable scraped article for {cat_key} — falling back to web search")
+                selected, use_web = [], True
+            else:
+                log.info(f"Article chosen: {[a['title'][:60] for a in selected]}")
 
-            # ── 2. Full text of the chosen article(s) ───────────────────
-            for a in selected:
-                if a.get("url"):
-                    pages[a["url"]] = fetch_article_page(a["url"])
-            sources_text, complete = _format_sources_for_prompt(selected, pages, id_map)
-            if not complete:
-                log.info("Full text unavailable — writing from the summary (no figure beyond it)")
-            user_prompt = (category["prompt"].format(articles=sources_text, **fill) + context
-                           + "\n\n" + (_WRITE_FROM_FULL_TEXT if complete else _WRITE_FROM_SUMMARY))
-            tools = []
-        else:
+                # ── 2. Full text of the chosen article(s) ───────────────
+                for a in selected:
+                    if a.get("url"):
+                        pages[a["url"]] = fetch_article_page(a["url"])
+                sources_text, complete = _format_sources_for_prompt(selected, pages, id_map)
+                if not complete:
+                    log.info("Full text unavailable — writing from the summary (no figure beyond it)")
+                user_prompt = (category["prompt"].format(articles=sources_text, **fill) + context
+                               + "\n\n" + (_WRITE_FROM_FULL_TEXT if complete else _WRITE_FROM_SUMMARY))
+                tools = []
+
+        if use_web:
             user_prompt = (category.get("fallback_prompt", category["prompt"]) + context
                            + "\n\n" + _WRITE_FROM_WEB)
             tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_srch}]
@@ -727,10 +744,10 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
             return []
 
         # ── 4. Fact-check against the sources ───────────────────────────
-        if has_articles:
-            sources = _scraped_sources(selected, pages, category, indices_text, trends_text)
-        else:
+        if use_web:
             sources = _web_sources(draft, response.content, pages)
+        else:
+            sources = _scraped_sources(selected, pages, category, indices_text, trends_text)
 
         verdict, text = fact_check(draft, sources, model)
         if verdict is None:
@@ -762,7 +779,7 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
             text = truncate_message(text, slot_type)
 
         # ── 5. Images: only from the article(s) used, never already posted ─
-        candidates = image_candidates(selected, pages, claude_images, web_mode=not has_articles)
+        candidates = image_candidates(selected, pages, claude_images, web_mode=use_web)
         max_images = min(MAX_IMAGES_PER_POST, max(1, len(selected)))
         images = select_images(candidates, [], max_images)
         image_urls = [img.url for img in images]

@@ -1,9 +1,12 @@
 """
 Watch media scraper for Watchpoint.
 
-Sources: Hodinkee, WatchPro, Fratello, Monochrome, Worn & Wound, All Watch News.
+Sources: Hodinkee, Fratello, Monochrome, Worn & Wound, aBlogtoWatch, SJX,
+Revolution, Time+Tide, Watchonista, Watch Collecting Lifestyle.
 
-Uses RSS feeds for content discovery.
+Uses RSS feeds for content discovery. Every URL below answered 200 from
+Railway (production logs, 11/11/2026). WatchPro was removed: it answers
+403 / an HTML challenge page to Railway's servers.
 """
 
 from scrapers.base import BaseScraper, RSSMixin, Article
@@ -18,11 +21,17 @@ class WatchMediaScraper(BaseScraper, RSSMixin):
 
     # RSS Feed URLs
     RSS_SOURCES = [
-        ("Hodinkee", "https://www.hodinkee.com/feed"),
-        ("WatchPro", "https://www.watchpro.com/feed/"),
+        # /feed returned an HTML page ("syntax error"); /articles/rss is the feed
+        ("Hodinkee", "https://www.hodinkee.com/articles/rss"),
         ("Fratello Watches", "https://www.fratellowatches.com/feed/"),
-        ("Monochrome", "https://www.monochrome-watches.com/feed/"),
-        ("Worn & Wound", "https://www.wornandwound.com/feed/"),
+        ("Monochrome", "https://monochrome-watches.com/feed/"),
+        ("Worn & Wound", "https://wornandwound.com/feed/"),
+        ("aBlogtoWatch", "https://www.ablogtowatch.com/feed/"),
+        ("SJX Watches", "https://watchesbysjx.com/feed"),
+        ("Revolution", "https://revolutionwatch.com/feed/"),
+        ("Time+Tide", "https://timeandtidewatches.com/feed/"),
+        ("Watchonista", "https://www.watchonista.com/feed/articles/"),
+        ("Watch Collecting Lifestyle", "https://www.watchcollectinglifestyle.com/home?format=rss"),
         # "All Watch News" removed: it is an iPhone app re-posting the feeds
         # above (Hodinkee, Monochrome, Fratello…), not a publisher.
     ]
