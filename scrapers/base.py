@@ -117,7 +117,7 @@ class BaseScraper:
         source_label = _source_name_for_url(self.display_name, url)
 
         # Check if source is disabled
-        if is_source_disabled(source_label):
+        if is_source_disabled(source_label, url):
             log.info(f"[{self.display_name}] Skipping disabled source: {url}")
             self._stats["skipped_disabled"] += 1
             return None
@@ -141,7 +141,7 @@ class BaseScraper:
         source_label = _source_name_for_url(self.display_name, url)
 
         # Check if source is disabled
-        if is_source_disabled(source_label):
+        if is_source_disabled(source_label, url):
             log.info(f"[{self.display_name}] Skipping disabled source: {url}")
             self._stats["skipped_disabled"] += 1
             return None
@@ -180,7 +180,7 @@ class RSSMixin:
         source_label = _source_name_for_url(self.display_name, url)
 
         # Check if source is disabled
-        if is_source_disabled(source_label):
+        if is_source_disabled(source_label, url):
             log.info(f"[{self.display_name}] Skipping disabled RSS: {source_name}")
             self._stats["skipped_disabled"] += 1
             return []
