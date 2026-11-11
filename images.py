@@ -18,12 +18,12 @@ import io
 import re
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
 
+from articles import page_image_from_html
 from config import (
     IMAGE_DEDUP_DAYS, IMAGE_MAX_BYTES, IMAGE_MIN_HEIGHT, IMAGE_MIN_WIDTH,
     USER_AGENT, log,
@@ -167,13 +167,7 @@ def find_page_image(page_url: str, client: httpx.Client) -> Optional[str]:
         r.raise_for_status()
         if "html" not in r.headers.get("content-type", "html"):
             return None
-        soup = BeautifulSoup(r.text, "lxml")
-        for attrs in ({"property": "og:image:secure_url"}, {"property": "og:image"},
-                      {"name": "twitter:image"}, {"name": "twitter:image:src"},
-                      {"property": "twitter:image"}):
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content", "").strip():
-                return urljoin(page_url, tag["content"].strip())
+        return page_image_from_html(r.text, page_url)
     except Exception as e:
         log.info(f"No page image for {page_url[:90]}: {e}")
     return None

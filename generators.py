@@ -14,14 +14,14 @@ import random
 import anthropic
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from urllib.parse import urlsplit
 from config import (
     ANTHROPIC_KEY, TIMEZONE, MODEL_FLASH, MODEL_RICH,
-    EFFORT_FLASH, EFFORT_RICH, MAX_TOKENS,
+    EFFORT_FLASH, EFFORT_RICH, EFFORT_SELECT, EFFORT_CHECK, MAX_TOKENS,
     ARTICLE_MAX_AGE_HOURS, MAX_IMAGES_PER_POST,
     SHORT_CATEGORIES, RICH_CATEGORIES, RICH_WEIGHTS, log,
 )
-from prompts import SYSTEM_PROMPT, CATEGORIES
+from prompts import SYSTEM_PROMPT, CATEGORIES, CHECK_SYSTEM_PROMPT, CHECK_NO_SOURCE
+from articles import fetch_article_page, is_article_url
 from database import (
     get_fresh_articles, get_latest_indices, get_index_history,
     get_recent_topics, get_recent_categories, get_price_trend,
@@ -144,6 +144,10 @@ _IA_WARNING_PHRASES = [
     "force est de constater", "il convient de noter",
     "il est intéressant de noter", "il est à noter que",
     "sans surprise", "comme on pouvait s'y attendre",
+    # lyrical / grandiloquent vocabulary (banned by the style rules)
+    "iconique", "intemporel", "légendaire", "mythique", "sublime", "majestueu",
+    "écrin", "ode à", "savoir-faire ancestral", "quintessence", "alchimie",
+    "noblesse", "rend hommage", "incarne", "témoigne", "s'inscrit dans", "..",
 ]
 
 
@@ -270,55 +274,65 @@ def parse_response_meta(raw: str) -> tuple:
     return "\n".join(text_lines).strip(), image_urls, source_ids
 
 
-def _same_url(a: str, b: str) -> bool:
-    return a.strip().rstrip("/").lower() == b.strip().rstrip("/").lower()
-
-
 def linked_urls(text: str) -> list:
     """URLs of the links in the message (<a href="…">)."""
     return _HREF.findall(text)
 
 
-def resolve_used_articles(source_ids: list, id_map: dict, text: str,
-                          claude_images: list) -> list:
-    """Articles the post is based on: the ids Claude declared (SOURCES:),
-    else the articles linked in the text or whose image Claude picked."""
-    used = [id_map[i] for i in source_ids if i in id_map]
-    if not used:
-        links = linked_urls(text)
-        for a in id_map.values():
-            linked = a.get("url") and any(_same_url(a["url"], u) for u in links)
-            picked = a.get("image_url") and a["image_url"] in claude_images
-            if linked or picked:
-                used.append(a)
-    if not used and len(id_map) == 1:
-        used = list(id_map.values())
-    return used
+def citation_snippets(content) -> dict:
+    """{url: (title, [passages])} that Claude cited from its web search
+    results — the exact source sentences behind the post."""
+    found = {}
+    for block in content:
+        if block.type != "text":
+            continue
+        for c in getattr(block, "citations", None) or []:
+            cited = getattr(c, "cited_text", None)
+            if not cited:
+                continue
+            url = getattr(c, "url", None) or ""
+            title, passages = found.setdefault(url, (getattr(c, "title", None) or url, []))
+            if cited not in passages:
+                passages.append(cited)
+    return found
 
 
-def _is_article_page(url: str) -> bool:
-    """A real article URL (not a site homepage, whose share image is a logo)."""
-    try:
-        return bool(urlsplit(url).path.strip("/"))
-    except ValueError:
-        return False
+def image_candidates(selected: list, pages: dict, claude_images: list, web_mode: bool) -> list:
+    """Image URLs to try, most relevant first — only from the article(s) the
+    post is about: their feed image, then their page's share image. In web
+    search mode: the cited pages' share images, then the image Claude found.
+    Images of unrelated articles are never candidates."""
+    if web_mode:
+        urls = [p.image for p in pages.values() if p.image] + list(claude_images)
+    else:
+        urls = [a["image_url"] for a in selected if a.get("image_url")]
+        urls += [pages[a["url"]].image for a in selected
+                 if a.get("url") in pages and pages[a["url"]].image]
+    seen, out = set(), []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
 
-def image_candidates(used: list, id_map: dict, claude_images: list, text: str) -> tuple:
-    """(direct image URLs, article pages for og:image) — only for the
-    article(s) the post is about, never images of unrelated articles."""
-    if not id_map:  # web search mode: Claude's pick (validated later), cited pages
-        pages = [u for u in linked_urls(text) if _is_article_page(u)]
-        return list(claude_images), pages
+_VERDICT_LINE = re.compile(r"^\s*V[EÉ]RIFICATION\s*:\s*(OK|CORRIG[EÉ])\b", re.I)
+_REJECT_LINE = re.compile(r"^\s*REJET\b", re.I)
 
-    used_images = [a["image_url"] for a in used if a.get("image_url")]
-    provided = {a["image_url"] for a in id_map.values() if a.get("image_url")}
-    # Claude may only pick among the provided images, and one of the used
-    # articles' when those are known.
-    picks = [u for u in claude_images if u in provided and (u in used_images or not used)]
-    pages = [a["url"] for a in used
-             if a.get("url") and a.get("published_at") and _is_article_page(a["url"])]
-    return picks + [u for u in used_images if u not in picks], pages
+
+def parse_check_output(out: str) -> tuple:
+    """Fact-check reply -> (verdict, text). verdict: "OK", "CORRIGE",
+    "REJET", or None when the reply does not follow the expected format."""
+    lines = out.strip().split("\n")
+    if not lines[0].strip():
+        return None, ""
+    if _REJECT_LINE.match(lines[0]):
+        return "REJET", ""
+    m = _VERDICT_LINE.match(lines[0])
+    if not m:
+        return None, out.strip()
+    verdict = "OK" if m.group(1).upper() == "OK" else "CORRIGE"
+    return verdict, "\n".join(lines[1:]).strip()
 
 
 # ─── PROMPT BUILDING ─────────────────────────────────────────────────────────
@@ -341,10 +355,30 @@ def _format_articles_for_prompt(articles: list, max_items: int = 8) -> tuple:
             line += f"\n  {a['summary'][:400]}"
         if a.get("url"):
             line += f"\n  URL: {a['url']}"
-        if a.get("image_url"):
-            line += f"\n  IMAGE: {a['image_url']}"
         lines.append(line)
     return "\n".join(lines), id_map
+
+
+def _format_sources_for_prompt(selected: list, pages: dict, id_map: dict) -> tuple:
+    """The chosen article(s) with their full text, for the writing step.
+    Returns (text, True if the full text of every article is available)."""
+    ids = {a["id"]: aid for aid, a in id_map.items()}
+    blocks, complete = [], True
+    for a in selected:
+        block = f"[{ids.get(a['id'], 'A?')}] {a['source_name']} — {a['title']}"
+        published = a.get("published_at") or ""
+        if published[:4].isdigit():
+            block += f" (publié le {published[:10]})"
+        if a.get("url"):
+            block += f"\nURL: {a['url']}"
+        page = pages.get(a.get("url"))
+        if page and page.text:
+            block += f"\nTEXTE DE L'ARTICLE :\n{page.text}"
+        else:
+            complete = False
+            block += f"\nRÉSUMÉ (texte complet indisponible) :\n{a.get('summary') or '(aucun)'}"
+        blocks.append(block)
+    return "\n\n".join(blocks), complete
 
 
 def _format_indices_for_prompt() -> str:
@@ -461,8 +495,136 @@ def _call_claude(model: str, effort: str, user_prompt: str, tools: list):
     return response
 
 
+# ─── WRITING PIPELINE ────────────────────────────────────────────────────────
+#   1. Claude picks the article from titles + summaries
+#   2. the bot downloads the full text of that article
+#   3. Claude writes the post from that text only
+#   4. a second pass checks the post against the sources (fact-check)
+
+_SELECTION_INSTRUCTION = """ÉTAPE 1 — SÉLECTION. N'écris pas encore le message.
+Choisis l'article le plus pertinent pour ce format, en respectant les règles ci-dessus et en évitant les sujets déjà couverts. Deux articles au maximum, et seulement s'ils traitent exactement du même sujet.
+Réponds uniquement par une ligne : SOURCES: A? — ou SKIP si aucun article ne convient."""
+
+_WRITE_FROM_FULL_TEXT = """Rédige le message à partir de ce seul texte. Les chiffres (prix, dimensions, calibre, réserve de marche, étanchéité, tirage) ne peuvent venir que de ce texte et doivent concerner le modèle dont parle l'article, pas une version précédente citée en comparaison.
+
+Réponds UNIQUEMENT avec le message Telegram final, sans aucun commentaire."""
+
+_WRITE_FROM_SUMMARY = """Tu ne disposes que d'un résumé de l'article : n'écris aucun chiffre ni aucune caractéristique qui n'y figure pas.
+
+Réponds UNIQUEMENT avec le message Telegram final, sans aucun commentaire."""
+
+_WRITE_FROM_WEB = """Si tu as l'URL directe d'une image de l'article que tu cites, ajoute avant le message une ligne technique IMAGE: url (elle sera retirée). N'invente jamais d'URL.
+
+Hormis cette ligne technique, réponds UNIQUEMENT avec le message Telegram final. Aucun commentaire sur tes recherches."""
+
+
+def _context_block(is_short: bool) -> str:
+    """Date window, topics already covered, length."""
+    now = datetime.now(TIMEZONE)
+    now_str = now.strftime("%A %d %B %Y, %H:%M")
+    date_today = now.strftime("%d %B %Y")
+    date_limit = (now - timedelta(days=7)).strftime("%d %B %Y")
+
+    recent_topics = get_recent_topics(days=3)
+    dedup_block = ""
+    if recent_topics:
+        topics_list = "\n".join(f"- {t}" for t in recent_topics)
+        dedup_block = f"\nSUJETS DÉJÀ COUVERTS RÉCEMMENT — ne pas aborder :\n{topics_list}\n"
+
+    if is_short:
+        length = "LONGUEUR MAX : 350-500 caractères (hors HTML). Court, un seul sujet, l'essentiel."
+    else:
+        length = "LONGUEUR MAX : 500-1400 caractères (hors HTML). Détaillé, sans phrase inutile."
+
+    return f"""
+
+Date actuelle : {now_str} — Informations entre le {date_limit} et le {date_today}.
+{dedup_block}
+{length}"""
+
+
+def select_articles(prompt: str, id_map: dict, model: str):
+    """Step 1: Claude picks the article(s) to write about, from titles and
+    summaries. Returns the chosen articles, or None to skip the slot."""
+    response = _call_claude(model, EFFORT_SELECT, f"{prompt}\n\n{_SELECTION_INSTRUCTION}", [])
+    if response.stop_reason == "refusal":
+        log.warning("Article selection declined — slot skipped")
+        return None
+    raw = extract_final_text(response.content)
+    _, _, ids = parse_response_meta(raw)
+    selected = [id_map[i] for i in ids if i in id_map][:2]
+    if selected:
+        return selected
+    if "SKIP" in raw.upper():
+        return None
+    log.warning(f"No article number in the selection reply ({raw[:80]!r}) — using the top article")
+    return [next(iter(id_map.values()))]
+
+
+def _scraped_sources(selected: list, pages: dict, category: dict,
+                     indices_text: str, trends_text: str) -> list:
+    """Fact-check sources in article mode: the text the post was written from."""
+    sources = []
+    for a in selected:
+        page = pages.get(a.get("url"))
+        text = page.text if page and page.text else (a.get("summary") or "")
+        if text.strip():
+            sources.append((f"{a['source_name']} — {a['title']} — {a.get('url', '')}", text))
+    internal = []
+    if "{indices}" in category["prompt"] and not indices_text.startswith("(Pas"):
+        internal.append(indices_text)
+    if "{price_trends}" in category["prompt"] and not trends_text.startswith("(Pas"):
+        internal.append(trends_text)
+    if internal:
+        sources.append(("Données enregistrées par le bot (indices, prix)", "\n".join(internal)))
+    return sources
+
+
+def _web_sources(draft: str, content, pages: dict) -> list:
+    """Fact-check sources in web search mode: the pages the post links to
+    (downloaded now) and the passages Claude cited from its search."""
+    sources = []
+    for url in [u for u in linked_urls(draft) if is_article_url(u)][:2]:
+        page = pages.get(url) or fetch_article_page(url)
+        pages[url] = page
+        if page.text:
+            sources.append((f"Article cité — {url}", page.text))
+    for url, (title, passages) in citation_snippets(content).items():
+        sources.append((f"Extraits cités par la recherche — {title} — {url}",
+                        "\n".join(f"« {p} »" for p in passages)))
+    return sources
+
+
+def fact_check(draft: str, sources: list, model: str) -> tuple:
+    """Step 4: a second call compares the post with its sources and fixes,
+    removes or rejects what they do not support (prices, specs attributed to
+    the wrong model, figures from memory…), and lyrical phrasing.
+    sources: [(label, text)]. Returns (verdict, final text)."""
+    if sources:
+        body = "SOURCES (font foi) :\n\n" + "\n\n".join(
+            f"=== {label} ===\n{text}" for label, text in sources)
+    else:
+        body = CHECK_NO_SOURCE
+    response = client.beta.messages.create(
+        model=model,
+        max_tokens=MAX_TOKENS,
+        system=CHECK_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": f"{body}\n\nPOST À VÉRIFIER :\n{draft}"}],
+        output_config={"effort": EFFORT_CHECK},
+        betas=[_FALLBACK_BETA],
+        fallbacks="default",
+    )
+    if response.stop_reason in ("refusal", "max_tokens", "pause_turn"):
+        log.warning(f"Fact-check incomplete (stop_reason={response.stop_reason})")
+        return None, ""
+    verdict, text = parse_check_output(extract_final_text(response.content))
+    if verdict == "OK":
+        text = draft  # nothing to change: keep the draft exactly
+    return verdict, text
+
+
 def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list:
-    """Single attempt to generate message(s) for a slot."""
+    """Single attempt: pick the article, write from its full text, fact-check."""
     cat_key = force_category or pick_category(slot_type)
     category = CATEGORIES.get(cat_key)
 
@@ -475,7 +637,7 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
 
     log.info(f"Generating [{msg_type}] {category['label']} for slot {slot}")
 
-    # ── Gather scraped data for the prompt ───────────────────────────────
+    # ── Gather scraped data ──────────────────────────────────────────────
     source_cats = _CATEGORY_TO_SOURCE.get(cat_key, [])
     articles = []
     for src_cat in source_cats:
@@ -489,82 +651,55 @@ def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list
     articles_text, id_map = _format_articles_for_prompt(articles)
     indices_text = _format_indices_for_prompt()
     trends_text = _format_price_trends()
-
-    # ── Build the prompt ─────────────────────────────────────────────────
     has_articles = bool(id_map)
-
-    if has_articles:
-        prompt_template = category["prompt"]
-    else:
-        prompt_template = category.get("fallback_prompt", category["prompt"])
+    if not has_articles:
         log.info(f"No scraped articles for {cat_key} — falling back to web search")
 
-    # Fill template placeholders
-    user_prompt = prompt_template.format(
-        articles=articles_text,
-        indices=indices_text,
-        price_trends=trends_text,
-    ) if has_articles else prompt_template
-
-    # ── Add context ──────────────────────────────────────────────────────
-    now = datetime.now(TIMEZONE)
-    now_str = now.strftime("%A %d %B %Y, %H:%M")
-    date_today = now.strftime("%d %B %Y")
-    date_limit = (now - timedelta(days=7)).strftime("%d %B %Y")
-
-    # Anti-repetition
-    recent_topics = get_recent_topics(days=3)
-    dedup_block = ""
-    if recent_topics:
-        topics_list = "\n".join(f"- {t}" for t in recent_topics)
-        dedup_block = f"\nSUJETS DEJA COUVERTS RECEMMENT — ne pas aborder :\n{topics_list}\n"
-
-    # Slot type instructions
-    if is_short:
-        length_instruction = "LONGUEUR MAX : 350-500 caractères (hors HTML). Court, percutant, un seul sujet."
-    else:
-        length_instruction = "LONGUEUR MAX : 500-1400 caractères (hors HTML). Détaillé mais concis. Ton humain."
-
-    # Technical lines before the message (removed before sending): which
-    # articles were used (so they are not offered again) and their image.
-    if has_articles:
-        meta_instruction = """Avant le message, ajoute ces lignes techniques (elles seront retirées avant publication) :
-SOURCES: les numéros des articles réellement utilisés (ex. SOURCES: A2 — ou SOURCES: A1, A4)
-IMAGE: l'URL IMAGE d'un de ces articles s'il en a une (sinon, pas de ligne IMAGE)"""
-    else:
-        meta_instruction = """Si tu as l'URL directe d'une image de l'article que tu cites, ajoute avant le message une ligne technique IMAGE: url (elle sera retirée). N'invente jamais d'URL."""
-
-    user_prompt += f"""
-
-Date actuelle : {now_str} — Informations entre le {date_limit} et le {date_today}.
-{dedup_block}
-{length_instruction}
-
-{meta_instruction}
-
-Hormis ces lignes techniques, réponds UNIQUEMENT avec le message Telegram final. Aucun commentaire sur tes recherches."""
-
-    # ── API call ─────────────────────────────────────────────────────────
+    context = _context_block(is_short)
     model = MODEL_FLASH if is_short else MODEL_RICH
     effort = EFFORT_FLASH if is_short else EFFORT_RICH
     max_srch = 2 if is_short else 4
 
-    # Only use web search if no scraped articles (fallback mode)
-    tools = []
-    if not has_articles:
-        tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_srch}]
-
     try:
+        selected, pages = [], {}
+
+        if has_articles:
+            fill = {"indices": indices_text, "price_trends": trends_text}
+            # ── 1. Pick the article from titles + summaries ─────────────
+            selected = select_articles(
+                category["prompt"].format(articles=articles_text, **fill) + context, id_map, model)
+            if not selected:
+                log.info("Claude returned SKIP at selection — no suitable article")
+                return []
+            log.info(f"Article chosen: {[a['title'][:60] for a in selected]}")
+
+            # ── 2. Full text of the chosen article(s) ───────────────────
+            for a in selected:
+                if a.get("url"):
+                    pages[a["url"]] = fetch_article_page(a["url"])
+            sources_text, complete = _format_sources_for_prompt(selected, pages, id_map)
+            if not complete:
+                log.info("Full text unavailable — writing from the summary (no figure beyond it)")
+            user_prompt = (category["prompt"].format(articles=sources_text, **fill) + context
+                           + "\n\n" + (_WRITE_FROM_FULL_TEXT if complete else _WRITE_FROM_SUMMARY))
+            tools = []
+        else:
+            user_prompt = (category.get("fallback_prompt", category["prompt"]) + context
+                           + "\n\n" + _WRITE_FROM_WEB)
+            tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_srch}]
+
+        # ── 3. Write ─────────────────────────────────────────────────────
         response = _call_claude(model, effort, user_prompt, tools)
         log.info(f"Model: {response.model} | effort: {effort} | web_search: {bool(tools)} "
                  f"| stop: {response.stop_reason}")
 
-        # ── Stop reasons: never send a refused or cut-off message ────────
+        # Never send a refused or cut-off message
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
-            category = getattr(details, "category", None)
-            log.warning(f"Claude declined the request (category: {category})")
-            log_health_event("generation_refusal", f"Slot {slot}, cat={cat_key}, category={category}")
+            refusal_category = getattr(details, "category", None)
+            log.warning(f"Claude declined the request (category: {refusal_category})")
+            log_health_event("generation_refusal",
+                             f"Slot {slot}, cat={cat_key}, category={refusal_category}")
             return []
 
         if response.stop_reason in ("max_tokens", "pause_turn"):
@@ -574,43 +709,62 @@ Hormis ces lignes techniques, réponds UNIQUEMENT avec le message Telegram final
             return []
 
         raw = extract_final_text(response.content)
-
         if not raw:
             block_types = [b.type for b in response.content]
             log.warning(f"Empty text from Claude. Content block types: {block_types}")
-            log.warning(f"Stop reason: {response.stop_reason}")
             log_health_event("generation_empty", f"Slot {slot}, cat={cat_key}, blocks={block_types}")
             return []
 
-        # ── Split metadata lines (SOURCES:, IMAGE:) from the message ─────
-        text, claude_images, source_ids = parse_response_meta(raw)
+        draft, claude_images, _ = parse_response_meta(raw)
 
-        # ── Quality filters ──────────────────────────────────────────────
-        if is_meta_commentary(text):
+        if is_meta_commentary(draft):
             log.error("Meta-commentary detected — message blocked")
             log_health_event("meta_commentary_blocked", f"Slot {slot}, cat={cat_key}")
             return []
 
-        if not text or is_skip_response(text):
+        if not draft or is_skip_response(draft):
             log.info("Claude returned SKIP (or no message) — no suitable content")
             return []
 
-        # ── IA warning check (soft — log only) ───────────────────────────
+        # ── 4. Fact-check against the sources ───────────────────────────
+        if has_articles:
+            sources = _scraped_sources(selected, pages, category, indices_text, trends_text)
+        else:
+            sources = _web_sources(draft, response.content, pages)
+
+        verdict, text = fact_check(draft, sources, model)
+        if verdict is None:
+            log.warning("Fact-check unusable — post not sent")
+            log_health_event("fact_check_failed", f"Slot {slot}, cat={cat_key}")
+            return []
+        if verdict == "REJET":
+            plain = " ".join(re.sub(r"<[^>]+>", "", draft).split())  # one line for the report
+            log.warning(f"Fact-check rejected the post: {plain[:300]!r}")
+            log_health_event("fact_check_rejected", f"{cat_key} : {plain[:150]}")
+            return []
+        if verdict == "CORRIGE":
+            log.info(f"Fact-check corrected the post\n  BEFORE: {draft}\n  AFTER:  {text}")
+            log_health_event("fact_check_corrected", f"{cat_key}")
+        else:
+            log.info(f"Fact-check OK ({len(sources)} source(s))")
+
+        text, _, _ = parse_response_meta(text)
+        if not text or is_meta_commentary(text) or is_skip_response(text):
+            log.warning("Nothing publishable after the fact-check — post not sent")
+            log_health_event("fact_check_failed", f"Slot {slot}, cat={cat_key}: empty result")
+            return []
+
+        # Soft style check (logged only)
         check_ia_warning(text)
 
-        # ── Length enforcement ─────────────────────────────────────────
+        # Length enforcement
         if is_too_long(text, slot_type):
             text = truncate_message(text, slot_type)
 
-        # ── Which articles the post is about ─────────────────────────────
-        used = resolve_used_articles(source_ids, id_map, text, claude_images)
-        if has_articles:
-            log.info(f"Articles used: {[a['title'][:50] for a in used] or 'unknown'} "
-                     f"(declared: {source_ids or 'none'})")
-
-        # ── Images: only from those articles, never already posted ───────
-        candidates, pages = image_candidates(used, id_map, claude_images, text)
-        images = select_images(candidates, pages, MAX_IMAGES_PER_POST)
+        # ── 5. Images: only from the article(s) used, never already posted ─
+        candidates = image_candidates(selected, pages, claude_images, web_mode=not has_articles)
+        max_images = min(MAX_IMAGES_PER_POST, max(1, len(selected)))
+        images = select_images(candidates, [], max_images)
         image_urls = [img.url for img in images]
 
         if image_urls:
@@ -626,7 +780,7 @@ Hormis ces lignes techniques, réponds UNIQUEMENT avec le message Telegram final
         summary = re.sub(r"<[^>]+>", "", body_start)[:120]
 
         return [Post(text=text, image_urls=image_urls, msg_type=msg_type, category=cat_key,
-                     slot=slot, summary=summary, article_ids=[a["id"] for a in used],
+                     slot=slot, summary=summary, article_ids=[a["id"] for a in selected],
                      images=images)]
 
     except _CONFIG_ERRORS as e:

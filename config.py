@@ -49,6 +49,14 @@ MODEL_RICH  = (os.getenv("MODEL_RICH") or "claude-sonnet-5-5")    # Detailed con
 # "low" suffit pour des messages courts ; "medium" pour le message riche du jour.
 EFFORT_FLASH = (os.getenv("EFFORT_FLASH") or "low")
 EFFORT_RICH  = (os.getenv("EFFORT_RICH") or "medium")
+# Choix de l'article (tâche simple) et relecture factuelle (exactitude des
+# prix et caractéristiques : on privilégie la rigueur).
+EFFORT_SELECT = (os.getenv("EFFORT_SELECT") or "low")
+EFFORT_CHECK  = (os.getenv("EFFORT_CHECK") or "high")
+
+# Texte d'article transmis à Claude (au-delà : début + fin, car la fiche
+# technique et le prix sont souvent en bas de l'article).
+SOURCE_TEXT_MAX_CHARS = 20000
 
 # Plafond de tokens en sortie (réflexion + message). Ce n'est pas une cible :
 # la longueur réelle est imposée par le prompt et truncate_message().
