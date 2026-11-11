@@ -66,9 +66,18 @@ def daily_health_report():
 
     # ── Health events (errors, blocks) ───────────────────────────────────
     events = get_health_events_today()
+    corrected = sum(1 for ev in events if ev["event_type"] == "fact_check_corrected")
+    rejected = [ev for ev in events if ev["event_type"] == "fact_check_rejected"]
     error_lines = []
     for ev in events:
+        if ev["event_type"] in ("fact_check_corrected", "fact_check_rejected"):
+            continue  # reported in their own section below
         error_lines.append(f"  ⚠️ [{ev['event_type']}] {ev['message'][:100]}")
+
+    # ── Fact-check (corrections before publication) ──────────────────────
+    check_lines = [f"  Posts corrigés : <b>{corrected}</b> | Rejetés : <b>{len(rejected)}</b>"]
+    for ev in rejected[:3]:
+        check_lines.append(f"  ✂️ {ev['message'][:100]}")
 
     # ── Broken / disabled sources ────────────────────────────────────────
     broken = get_broken_sources()
@@ -112,6 +121,9 @@ def daily_health_report():
 <b>Scraping</b>
   Articles collectés : <b>{articles_today}</b>
 {scrape_block}
+
+<b>Relecture factuelle</b>
+{nl.join(check_lines)}
 
 <b>Stockage</b>
 {storage_line}"""
