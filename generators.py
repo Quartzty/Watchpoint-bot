@@ -9,11 +9,13 @@ Returns (text, image_urls, msg_type, category).
 """
 
 import re
+import html
 import random
 import anthropic
 from datetime import datetime, timedelta
 from config import (
     ANTHROPIC_KEY, TIMEZONE, MODEL_FLASH, MODEL_RICH,
+    EFFORT_FLASH, EFFORT_RICH, MAX_TOKENS,
     SHORT_CATEGORIES, RICH_CATEGORIES, RICH_WEIGHTS, log,
 )
 from prompts import SYSTEM_PROMPT, CATEGORIES
@@ -22,8 +24,60 @@ from database import (
     get_recent_topics, get_recent_categories, get_price_trend,
     record_sent_message, log_health_event,
 )
+from telegram import send_admin
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+# Server-side fallback (beta): if the model declines a request in a category
+# the API can reroute, it re-runs it on a fallback model within the same call.
+_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+# Web search runs a server-side loop; when it hits its iteration limit the
+# response stops with "pause_turn" and must be re-sent to finish the turn.
+_MAX_PAUSE_RESUMES = 3
+
+# Errors that retrying cannot fix (retired/unknown model, invalid or revoked
+# API key): they silence the bot, so they must reach the admin immediately.
+_CONFIG_ERRORS = (
+    anthropic.NotFoundError,
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+)
+
+_admin_alerts_sent: set = set()
+
+
+def _alert_admin_once(kind: str, message: str):
+    """Send an admin alert at most once per day for a given kind of problem."""
+    key = (datetime.now(TIMEZONE).strftime("%Y-%m-%d"), kind)
+    if key in _admin_alerts_sent:
+        return
+    _admin_alerts_sent.add(key)
+    send_admin(f"⚠️ <b>Watchpoint — alerte</b>\n{html.escape(message)}")
+
+
+def check_models() -> bool:
+    """Check at startup that the configured Claude models can be used.
+    A retired model or a bad API key otherwise only shows up as silent
+    generation failures at the next slot."""
+    ok = True
+    for model in sorted({MODEL_FLASH, MODEL_RICH}):
+        try:
+            client.models.retrieve(model)
+            log.info(f"Claude model available: {model}")
+        except _CONFIG_ERRORS as e:
+            ok = False
+            log.error(f"Claude model check failed for {model}: {e}")
+            log_health_event("api_config_error", f"{model}: {str(e)[:300]}")
+            _alert_admin_once(
+                type(e).__name__,
+                f"Le modèle Claude « {model} » est inutilisable ({type(e).__name__}) : "
+                f"aucun message ne pourra être généré. Vérifie MODEL_FLASH / MODEL_RICH "
+                f"et ANTHROPIC_API_KEY.",
+            )
+        except anthropic.APIError as e:
+            log.warning(f"Could not verify Claude model {model}: {e}")
+    return ok
 
 
 # ─── CATEGORY SELECTION ──────────────────────────────────────────────────────
@@ -161,6 +215,22 @@ def is_skip_response(text: str) -> bool:
     return plain.upper() == "SKIP"
 
 
+def extract_final_text(content) -> str:
+    """Return the text of the final answer.
+
+    Blocks are read by type: the response can contain (empty) thinking blocks,
+    web search blocks, and short remarks written before a search
+    ("Je vais chercher…") as text blocks. Only the text written after the last
+    tool block is the message itself."""
+    parts = []
+    for block in content:
+        if block.type == "text":
+            parts.append(block.text)
+        elif block.type not in ("thinking", "redacted_thinking"):
+            parts = []  # tool use / tool result / fallback: drop earlier text
+    return "".join(parts).strip()
+
+
 def parse_images_from_response(raw: str) -> tuple:
     """Extract IMAGE: URLs from response. Returns (text, list_of_image_urls)."""
     lines = raw.split("\n")
@@ -287,6 +357,31 @@ def generate_specific(cat_key: str) -> list:
     return _try_generate(slot=99, slot_type=slot_type, force_category=cat_key)
 
 
+def _call_claude(model: str, effort: str, user_prompt: str, tools: list):
+    """Call Claude, resuming the turn if the server-side web search pauses."""
+    messages = [{"role": "user", "content": user_prompt}]
+    kwargs = {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "system": SYSTEM_PROMPT,
+        "output_config": {"effort": effort},
+        "betas": [_FALLBACK_BETA],
+        "fallbacks": "default",
+    }
+    if tools:
+        kwargs["tools"] = tools
+
+    response = client.beta.messages.create(messages=messages, **kwargs)
+    for _ in range(_MAX_PAUSE_RESUMES):
+        if response.stop_reason != "pause_turn":
+            break
+        log.info("Web search paused (pause_turn) — resuming the turn")
+        # Re-send the paused turn as is; the API resumes where it stopped.
+        messages = messages + [{"role": "assistant", "content": response.content}]
+        response = client.beta.messages.create(messages=messages, **kwargs)
+    return response
+
+
 def _try_generate(slot: int, slot_type: str, force_category: str = None) -> list:
     """Single attempt to generate message(s) for a slot."""
     cat_key = force_category or pick_category(slot_type)
@@ -364,33 +459,34 @@ Reponds UNIQUEMENT avec le message Telegram final. Aucun commentaire sur tes rec
 
     # ── API call ─────────────────────────────────────────────────────────
     model = MODEL_FLASH if is_short else MODEL_RICH
-    max_tok = 300 if is_short else 800
+    effort = EFFORT_FLASH if is_short else EFFORT_RICH
     max_srch = 2 if is_short else 4
 
     # Only use web search if no scraped articles (fallback mode)
     tools = []
     if not has_articles:
-        tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": max_srch}]
+        tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": max_srch}]
 
     try:
-        kwargs = {
-            "model": model,
-            "max_tokens": max_tok,
-            "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": user_prompt}],
-        }
-        if tools:
-            kwargs["tools"] = tools
+        response = _call_claude(model, effort, user_prompt, tools)
+        log.info(f"Model: {response.model} | effort: {effort} | web_search: {bool(tools)} "
+                 f"| stop: {response.stop_reason}")
 
-        response = client.messages.create(**kwargs)
-        log.info(f"Model: {model} | max_tokens: {max_tok} | web_search: {bool(tools)}")
+        # ── Stop reasons: never send a refused or cut-off message ────────
+        if response.stop_reason == "refusal":
+            details = getattr(response, "stop_details", None)
+            category = getattr(details, "category", None)
+            log.warning(f"Claude declined the request (category: {category})")
+            log_health_event("generation_refusal", f"Slot {slot}, cat={cat_key}, category={category}")
+            return []
 
-        # Extract text from response
-        text_parts = []
-        for b in response.content:
-            if b.type == "text" and hasattr(b, "text"):
-                text_parts.append(b.text)
-        raw = "".join(text_parts).strip()
+        if response.stop_reason in ("max_tokens", "pause_turn"):
+            log.warning(f"Incomplete response (stop_reason={response.stop_reason}) — not sent")
+            log_health_event("generation_incomplete",
+                             f"Slot {slot}, cat={cat_key}, stop={response.stop_reason}")
+            return []
+
+        raw = extract_final_text(response.content)
 
         if not raw:
             block_types = [b.type for b in response.content]
@@ -444,6 +540,15 @@ Reponds UNIQUEMENT avec le message Telegram final. Aucun commentaire sur tes rec
 
         return [(text, image_urls, msg_type, cat_key)]
 
+    except _CONFIG_ERRORS as e:
+        log.error(f"Anthropic configuration error ({type(e).__name__}): {e}")
+        log_health_event("api_config_error", str(e)[:300])
+        _alert_admin_once(
+            type(e).__name__,
+            f"Génération impossible ({type(e).__name__}) avec le modèle « {model} » : "
+            f"{str(e)[:300]}",
+        )
+        return []
     except anthropic.APIError as e:
         log.error(f"Anthropic API error: {e}")
         log_health_event("api_error", str(e))

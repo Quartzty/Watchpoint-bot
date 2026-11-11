@@ -38,8 +38,22 @@ TIMEZONE = pytz.timezone(TZ_NAME)
 
 # ─── MODELS ──────────────────────────────────────────────────────────────────
 
-MODEL_FLASH = "claude-sonnet-4-20250514"    # Sonnet for all messages — better quality + humanized tone
-MODEL_RICH  = "claude-sonnet-4-20250514"    # Sonnet for detailed content
+# claude-sonnet-4-20250514 a été retiré par Anthropic le 15/06/2026 : l'API
+# répond 404 à chaque appel et plus aucun message n'était généré.
+# Claude Sonnet 5.5 est le Sonnet actuel. Surchargeable sans redéploiement de
+# code via les variables MODEL_FLASH / MODEL_RICH (ex. sur Railway).
+MODEL_FLASH = (os.getenv("MODEL_FLASH") or "claude-sonnet-5-5")   # Short messages
+MODEL_RICH  = (os.getenv("MODEL_RICH") or "claude-sonnet-5-5")    # Detailed content
+
+# Effort (profondeur de réflexion) : "low" | "medium" | "high" | "xhigh" | "max".
+# "low" suffit pour des messages courts ; "medium" pour le message riche du jour.
+EFFORT_FLASH = (os.getenv("EFFORT_FLASH") or "low")
+EFFORT_RICH  = (os.getenv("EFFORT_RICH") or "medium")
+
+# Plafond de tokens en sortie (réflexion + message). Ce n'est pas une cible :
+# la longueur réelle est imposée par le prompt et truncate_message().
+# L'ancien plafond (300 / 800) laisserait la réflexion tronquer le message.
+MAX_TOKENS = 16000
 
 # ─── SCHEDULE ────────────────────────────────────────────────────────────────
 # 5 messages/jour — 4 Short + 1 Rich (18h00)
@@ -86,6 +100,10 @@ RICH_WEIGHTS = {
 
 # ─── SCRAPING ────────────────────────────────────────────────────────────────
 
+# Un créneau en retard (ex. bloqué par un cycle de scraping) part quand même
+# s'il reste dans cette fenêtre après son heure prévue.
+SLOT_GRACE_MINUTES = 20
+
 SCRAPE_INTERVAL_MINUTES = 60        # How often to run the scrape cycle
 SCRAPE_REQUEST_TIMEOUT  = 30        # HTTP timeout per source (seconds)
 SCRAPE_DELAY_BETWEEN    = 2         # Seconds between requests (rate limiting)
@@ -115,6 +133,6 @@ def validate_config() -> bool:
     log.info(f"   Admin chat : {ADMIN_CHAT_ID or 'not set'}")
     log.info(f"   Timezone   : {TZ_NAME}")
     log.info(f"   Heure Paris: {datetime.now(TIMEZONE).strftime('%H:%M')}")
-    log.info(f"   Flash model: {MODEL_FLASH}")
-    log.info(f"   Rich model : {MODEL_RICH}")
+    log.info(f"   Flash model: {MODEL_FLASH} (effort {EFFORT_FLASH})")
+    log.info(f"   Rich model : {MODEL_RICH} (effort {EFFORT_RICH})")
     return True

@@ -9,15 +9,16 @@
 import os
 import sys
 import time
+import socket
 import schedule
 from datetime import datetime
 
 from config import (
-    TIMEZONE, TZ_NAME, DAILY_SLOTS, SEND_ON_START,
-    SCRAPE_INTERVAL_MINUTES, validate_config, log,
+    TIMEZONE, TZ_NAME, DAILY_SLOTS, SEND_ON_START, SLOT_GRACE_MINUTES,
+    SCRAPE_INTERVAL_MINUTES, SCRAPE_REQUEST_TIMEOUT, validate_config, log,
 )
 from database import init_db, mark_slot_fired, get_fired_slots_today
-from generators import generate_message, generate_specific
+from generators import generate_message, generate_specific, check_models
 from telegram import dispatch
 from health import daily_health_report
 from scrapers import ALL_SCRAPERS
@@ -74,31 +75,51 @@ def job(slot: int, slot_type: str):
 # ─── SCHEDULER ───────────────────────────────────────────────────────────────
 
 _sent_today: set = set()
+_health_report_date = None
+
+HEALTH_REPORT_TIME = "23:55"
+
+
+def _minutes(hhmm: str) -> int:
+    """'HH:MM' -> minutes since midnight."""
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
 
 
 def check_slots():
-    """Check every 30 seconds if a slot should fire (Paris time)."""
+    """Check every 30 seconds if a slot should fire (Paris time).
+
+    The loop is single-threaded: a scrape cycle (several minutes) or a restart
+    can make it skip a slot's exact minute. A slot therefore fires once a day,
+    at its time or late within SLOT_GRACE_MINUTES."""
     global _sent_today
     now_paris = datetime.now(TIMEZONE)
     today = now_paris.strftime("%Y-%m-%d")
     hhmm = now_paris.strftime("%H:%M")
+    now_min = now_paris.hour * 60 + now_paris.minute
 
     # Purge cache if day changed
     _sent_today = {k for k in _sent_today if k.startswith(today)}
 
     for cfg in DAILY_SLOTS:
         key = f"{today}_slot{cfg['slot']}"
-        if hhmm == cfg["time"] and key not in _sent_today:
-            _sent_today.add(key)
-            mark_slot_fired(cfg["slot"])
-            log.info(f"⏰ Slot {cfg['slot']} fired at {hhmm} (Paris)")
-            job(cfg["slot"], cfg["type"])
+        delay = now_min - _minutes(cfg["time"])
+        if key in _sent_today or not 0 <= delay < SLOT_GRACE_MINUTES:
+            continue
+        _sent_today.add(key)
+        mark_slot_fired(cfg["slot"])
+        late = f" ({delay} min late)" if delay else ""
+        log.info(f"⏰ Slot {cfg['slot']} fired at {hhmm} (Paris){late}")
+        job(cfg["slot"], cfg["type"])
 
 
 def check_health_report():
-    """Send daily health report at 23:59."""
+    """Send the daily health report once a day, from HEALTH_REPORT_TIME."""
+    global _health_report_date
     now_paris = datetime.now(TIMEZONE)
-    if now_paris.strftime("%H:%M") == "23:59":
+    today = now_paris.strftime("%Y-%m-%d")
+    if now_paris.strftime("%H:%M") >= HEALTH_REPORT_TIME and _health_report_date != today:
+        _health_report_date = today
         daily_health_report()
 
 
@@ -111,8 +132,9 @@ def setup_schedule():
     log.info("Scheduler started")
     for cfg in DAILY_SLOTS:
         log.info(f"   → Slot {cfg['slot']} : {cfg['time']} ({cfg['type']}) ({TZ_NAME})")
+    log.info(f"   → Late slots still fire within {SLOT_GRACE_MINUTES} minutes")
     log.info(f"   → Scraping every {SCRAPE_INTERVAL_MINUTES} minutes")
-    log.info(f"   → Health report at 23:59")
+    log.info(f"   → Health report at {HEALTH_REPORT_TIME}")
 
 
 # ─── ENTRYPOINT ──────────────────────────────────────────────────────────────
@@ -128,7 +150,14 @@ if __name__ == "__main__":
     if not validate_config():
         exit(1)
 
+    # feedparser fetches RSS feeds with urllib and no timeout: one feed that
+    # never answers would block the whole (single-threaded) bot forever.
+    socket.setdefaulttimeout(SCRAPE_REQUEST_TIMEOUT)
+
     init_db()
+
+    # Fail loudly (logs + admin chat) if the Claude model is retired/unknown
+    check_models()
 
     # Load already-fired slots from DB
     fired = get_fired_slots_today()
@@ -187,7 +216,11 @@ if __name__ == "__main__":
 
     try:
         while True:
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as e:
+                # One failing job must not kill the bot (and the next slots)
+                log.exception(f"Scheduled job crashed: {e}")
             time.sleep(15)
     except KeyboardInterrupt:
         log.info("Bot stopped by user.")
