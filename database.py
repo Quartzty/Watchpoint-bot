@@ -110,7 +110,20 @@ def init_db():
             UNIQUE(source_name)
         );
 
+        -- Images already posted (dedup by normalized URL + perceptual hash)
+        CREATE TABLE IF NOT EXISTS sent_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL,
+            norm_url TEXT NOT NULL,
+            dhash TEXT,
+            width INTEGER,
+            height INTEGER,
+            category TEXT,
+            sent_at TEXT NOT NULL
+        );
+
         -- Indexes for performance
+        CREATE INDEX IF NOT EXISTS idx_sent_images_at ON sent_images(sent_at);
         CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(source_category);
         CREATE INDEX IF NOT EXISTS idx_articles_scraped ON articles(scraped_at);
         CREATE INDEX IF NOT EXISTS idx_articles_used ON articles(used_in_message);
@@ -168,13 +181,24 @@ def store_article(url: str, title: str, summary: str, source_name: str,
 
 
 def get_fresh_articles(category: str = None, hours: int = 24,
-                       unused_only: bool = True, limit: int = 20) -> list:
-    """Get recent articles, optionally filtered by category and usage."""
+                       unused_only: bool = True, limit: int = 20,
+                       max_age_hours: int = None) -> list:
+    """Get recent articles, optionally filtered by category and usage.
+
+    hours: scraped within this window. max_age_hours: also drop articles whose
+    publication date (ISO, when the source gives one) is older than this."""
     conn = get_db()
-    cutoff = (datetime.now(TIMEZONE) - timedelta(hours=hours)).isoformat()
+    now = datetime.now(TIMEZONE)
+    cutoff = (now - timedelta(hours=hours)).isoformat()
 
     query = "SELECT * FROM articles WHERE scraped_at > ?"
     params = [cutoff]
+
+    if max_age_hours:
+        # published_at is ISO (same timezone) for new rows; legacy free-text
+        # dates (e.g. "Mon, 10 Nov…") sort after digits and are kept as before.
+        query += " AND (published_at IS NULL OR published_at = '' OR published_at > ?)"
+        params.append((now - timedelta(hours=max_age_hours)).isoformat())
 
     if category:
         query += " AND source_category = ?"
@@ -183,7 +207,8 @@ def get_fresh_articles(category: str = None, hours: int = 24,
     if unused_only:
         query += " AND used_in_message = 0"
 
-    query += " ORDER BY priority ASC, scraped_at DESC LIMIT ?"
+    query += (" ORDER BY priority ASC,"
+              " COALESCE(NULLIF(published_at, ''), scraped_at) DESC LIMIT ?")
     params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
@@ -193,8 +218,17 @@ def get_fresh_articles(category: str = None, hours: int = 24,
 
 def mark_article_used(article_id: int):
     """Mark an article as used in a message."""
+    mark_articles_used([article_id])
+
+
+def mark_articles_used(article_ids: list):
+    """Mark articles as used so they are not offered to Claude again."""
+    ids = [int(i) for i in article_ids if i is not None]
+    if not ids:
+        return
     conn = get_db()
-    conn.execute("UPDATE articles SET used_in_message = 1 WHERE id = ?", (article_id,))
+    conn.executemany("UPDATE articles SET used_in_message = 1 WHERE id = ?",
+                     [(i,) for i in ids])
     conn.commit()
     conn.close()
 
@@ -319,6 +353,54 @@ def get_recent_categories(days: int = 3) -> list:
     """, (cutoff,)).fetchall()
     conn.close()
     return [{"category": r["category"], "sent_at": r["sent_at"]} for r in rows]
+
+
+# ─── SENT IMAGES ─────────────────────────────────────────────────────────────
+
+def record_sent_images(images: list, category: str = None):
+    """Record images actually posted. images: objects with url, norm_url,
+    dhash (int or None), width, height."""
+    if not images:
+        return
+    conn = get_db()
+    now = datetime.now(TIMEZONE).isoformat()
+    conn.executemany("""
+        INSERT INTO sent_images (url, norm_url, dhash, width, height, category, sent_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (img.url, img.norm_url,
+         format(img.dhash, "016x") if img.dhash is not None else None,
+         img.width, img.height, category, now)
+        for img in images
+    ])
+    conn.commit()
+    conn.close()
+
+
+def get_recent_sent_images(days: int = 90) -> list:
+    """(norm_url, dhash as int or None) of images posted in the last N days."""
+    conn = get_db()
+    cutoff = (datetime.now(TIMEZONE) - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT norm_url, dhash FROM sent_images WHERE sent_at > ?", (cutoff,)
+    ).fetchall()
+    conn.close()
+    return [(r["norm_url"], int(r["dhash"], 16) if r["dhash"] else None) for r in rows]
+
+
+# ─── STORAGE ─────────────────────────────────────────────────────────────────
+
+def get_storage_stats() -> dict:
+    """What the database remembers — shows whether history survived a deploy."""
+    conn = get_db()
+    stats = {
+        "articles": conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0],
+        "messages": conn.execute("SELECT COUNT(*) FROM sent_messages").fetchone()[0],
+        "images": conn.execute("SELECT COUNT(*) FROM sent_images").fetchone()[0],
+        "first_message": conn.execute("SELECT MIN(sent_at) FROM sent_messages").fetchone()[0],
+    }
+    conn.close()
+    return stats
 
 
 # ─── SLOT TRACKING ───────────────────────────────────────────────────────────

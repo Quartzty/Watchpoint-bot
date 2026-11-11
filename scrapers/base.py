@@ -11,11 +11,12 @@ successes/failures are recorded, and broken sources are auto-disabled.
 import time
 import hashlib
 import httpx
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 from bs4 import BeautifulSoup
-from config import SCRAPE_REQUEST_TIMEOUT, SCRAPE_DELAY_BETWEEN, USER_AGENT, log
+from config import SCRAPE_REQUEST_TIMEOUT, SCRAPE_DELAY_BETWEEN, USER_AGENT, TIMEZONE, log
 from database import (
     store_article, store_price_index, store_watch_price,
     record_source_success, record_source_failure, is_source_disabled,
@@ -51,6 +52,18 @@ class Article:
             raw_html=self.raw_html,
             image_url=self.image_url,
         )
+
+
+def _entry_published_iso(entry) -> Optional[str]:
+    """RSS publication date as ISO in the bot's timezone, comparable with
+    scraped_at (feedparser gives *_parsed as UTC struct_time). None if absent."""
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if parsed:
+        try:
+            return datetime(*parsed[:6], tzinfo=timezone.utc).astimezone(TIMEZONE).isoformat()
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 def _source_name_for_url(display_name: str, url: str) -> str:
@@ -219,9 +232,17 @@ class RSSMixin:
                             image_url = enc.get("href") or enc.get("url")
                             break
 
-                published = None
-                if hasattr(entry, "published"):
-                    published = entry.published
+                # Full content (WordPress content:encoded) often carries the
+                # photos that the excerpt lacks
+                if not image_url and entry.get("content"):
+                    content = BeautifulSoup(entry.content[0].get("value", ""), "lxml")
+                    for img in content.find_all("img"):
+                        src = img.get("src") or img.get("data-src") or ""
+                        if src.startswith("http") and "emoji" not in src:
+                            image_url = src
+                            break
+
+                published = _entry_published_iso(entry)
 
                 articles.append(Article(
                     url=entry.link,

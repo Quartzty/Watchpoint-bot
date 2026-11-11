@@ -111,7 +111,46 @@ USER_AGENT = "WatchpointBot/1.0 (watch market intelligence; contact@watchpoint.f
 
 # ─── DATABASE ────────────────────────────────────────────────────────────────
 
-DB_PATH = os.getenv("DB_PATH", "watchpoint.db")
+# Sur Railway, le disque du conteneur est éphémère : sans volume, la base est
+# effacée à chaque (re)déploiement — historique anti-répétition, articles et
+# images déjà utilisés compris. Quand un volume est attaché, Railway expose son
+# point de montage dans RAILWAY_VOLUME_MOUNT_PATH : la base y est alors placée
+# automatiquement (même si DB_PATH pointe hors du volume).
+RAILWAY_VOLUME_MOUNT_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+ON_RAILWAY = any(os.getenv(k) for k in (
+    "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_NAME",
+    "RAILWAY_DEPLOYMENT_ID", "RAILWAY_ENVIRONMENT",
+))
+
+
+def _resolve_db_path() -> str:
+    configured = os.getenv("DB_PATH") or "watchpoint.db"
+    path = os.path.abspath(configured)
+    if RAILWAY_VOLUME_MOUNT_PATH:
+        volume = os.path.abspath(RAILWAY_VOLUME_MOUNT_PATH)
+        if os.path.commonpath([path, volume]) != volume:
+            path = os.path.join(volume, os.path.basename(configured))
+    return path
+
+
+DB_PATH = _resolve_db_path()
+DB_ON_VOLUME = bool(RAILWAY_VOLUME_MOUNT_PATH)
+DB_EPHEMERAL = ON_RAILWAY and not DB_ON_VOLUME
+
+# ─── ARTICLES & IMAGES ───────────────────────────────────────────────────────
+
+# Un article RSS publié il y a plus longtemps n'est plus proposé à Claude
+# (sinon, après chaque remise à zéro de la base, d'anciens articles repassent
+# pour « frais »).
+ARTICLE_MAX_AGE_HOURS = 72
+
+# Images : une image (même URL normalisée ou même empreinte visuelle) déjà
+# publiée dans cette fenêtre n'est pas réutilisée.
+IMAGE_DEDUP_DAYS = 90
+MAX_IMAGES_PER_POST = 2
+IMAGE_MIN_WIDTH = 400           # en dessous : vignette / icône / logo
+IMAGE_MIN_HEIGHT = 250
+IMAGE_MAX_BYTES = 5 * 1024 * 1024   # limite Telegram pour une photo envoyée par URL
 
 # ─── VALIDATION ──────────────────────────────────────────────────────────────
 

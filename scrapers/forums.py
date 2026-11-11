@@ -1,10 +1,13 @@
 """
 Forums scraper for Watchpoint.
 
-Sources: Reddit r/Watches, r/Rolex (via JSON API),
-WatchUSeek, Rolex Forums.
+Sources: WatchUSeek, Rolex Forums.
 
 Tracks trending discussions and community insights.
+
+Reddit was removed: its .json/.rss endpoints refuse unauthenticated requests
+from cloud servers (403), Reddit ends RSS on 13 Nov 2026 and closes its
+public API by March 2027 (announced 30 Sep 2026).
 """
 
 import re
@@ -19,15 +22,6 @@ class ForumsScraper(BaseScraper):
     category = "forums"
     display_name = "Forums"
 
-    # Reddit subreddits (use old.reddit.com to avoid blocking)
-    REDDIT_WATCHES_JSON = "https://old.reddit.com/r/Watches/hot.json?limit=10"
-    REDDIT_ROLEX_JSON = "https://old.reddit.com/r/Rolex/hot.json?limit=10"
-
-    def __init__(self):
-        super().__init__()
-        # Reddit requires a descriptive User-Agent
-        self.client.headers["User-Agent"] = "WatchpointBot/2.0 (market intelligence bot; +https://watchpoint.fr)"
-
     # Forum URLs
     WATCHUSEEK_URL = "https://www.watchuseek.com"
     ROLEX_FORUMS_URL = "https://www.rolexforums.com"
@@ -36,93 +30,12 @@ class ForumsScraper(BaseScraper):
         """Scrape all forum sources."""
         articles = []
 
-        # Reddit r/Watches
-        articles.extend(self._scrape_reddit_watches())
-        self.delay()
-
-        # Reddit r/Rolex
-        articles.extend(self._scrape_reddit_rolex())
-        self.delay()
-
         # WatchUSeek Forums
         articles.extend(self._scrape_watchuseek())
         self.delay()
 
         # Rolex Forums
         articles.extend(self._scrape_rolex_forums())
-
-        return articles
-
-    def _scrape_reddit_watches(self) -> list[Article]:
-        """Scrape Reddit r/Watches hot posts."""
-        articles = []
-        try:
-            data = self.fetch_json(self.REDDIT_WATCHES_JSON)
-            if not data or "data" not in data:
-                return articles
-
-            posts = data["data"]["children"][:10]
-
-            for post_wrapper in posts:
-                post = post_wrapper.get("data", {})
-                title = post.get("title", "")
-                url = post.get("url", "")
-                selftext = post.get("selftext", "")[:500]
-                score = post.get("score", 0)
-                created_utc = post.get("created_utc")
-
-                # Filter out low-engagement posts
-                if score < 50:
-                    continue
-
-                summary = selftext or f"Score: {score} upvotes"
-
-                articles.append(Article(
-                    url=url,
-                    title=title,
-                    summary=summary,
-                    source_name="Reddit r/Watches",
-                    source_category=self.category,
-                    priority="P2",
-                ))
-        except Exception as e:
-            log.warning(f"[{self.display_name}] Reddit r/Watches error: {e}")
-
-        return articles
-
-    def _scrape_reddit_rolex(self) -> list[Article]:
-        """Scrape Reddit r/Rolex hot posts."""
-        articles = []
-        try:
-            data = self.fetch_json(self.REDDIT_ROLEX_JSON)
-            if not data or "data" not in data:
-                return articles
-
-            posts = data["data"]["children"][:10]
-
-            for post_wrapper in posts:
-                post = post_wrapper.get("data", {})
-                title = post.get("title", "")
-                url = post.get("url", "")
-                selftext = post.get("selftext", "")[:300]
-                score = post.get("score", 0)
-
-                # Filter out low-engagement posts
-                if score < 50:
-                    continue
-
-                summary = selftext or f"Score: {score} upvotes"
-
-                articles.append(Article(
-                    url=url,
-                    title=title,
-                    summary=summary,
-                    source_name="Reddit r/Rolex",
-                    source_category=self.category,
-                    priority="P2",
-                ))
-        except Exception as e:
-            log.warning(f"[{self.display_name}] Reddit r/Rolex error: {e}")
 
         return articles
 

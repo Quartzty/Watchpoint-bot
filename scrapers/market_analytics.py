@@ -71,14 +71,9 @@ class MarketAnalyticsScraper(BaseScraper, RSSMixin):
                 title = "WatchCharts Price Index Update"
                 summary = index_text.get_text(strip=True)[:500]
 
-                # Try to extract numeric value for storage
-                numbers = re.findall(r'\d+\.?\d*', summary)
-                if numbers:
-                    try:
-                        value = float(numbers[0])
-                        store_price_index("watchcharts_index", "WatchCharts", value)
-                    except (ValueError, IndexError):
-                        pass
+                # No numeric extraction: the first number found in a block of
+                # homepage text is not the index (it could be a year, a price,
+                # a count…) and would be fed to Claude as "watchcharts_index".
 
                 articles.append(Article(
                     url=self.WATCHCHARTS_URL,

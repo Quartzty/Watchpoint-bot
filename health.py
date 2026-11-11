@@ -7,7 +7,9 @@ Sends a daily health report to the admin private chat.
 """
 
 from datetime import datetime
-from config import TIMEZONE, ADMIN_CHAT_ID, DAILY_SLOTS, log
+from config import (
+    TIMEZONE, ADMIN_CHAT_ID, DAILY_SLOTS, DB_EPHEMERAL, RAILWAY_VOLUME_MOUNT_PATH, log,
+)
 from database import get_health_events_today, get_fired_slots_today, get_db, get_broken_sources
 from telegram import send_admin
 
@@ -81,6 +83,15 @@ def daily_health_report():
         error_preview = f" — {src['last_error'][:60]}" if src.get("last_error") else ""
         broken_lines.append(f"  {status} {src['source_name']}{since}{error_preview}")
 
+    # ── Storage (does the history survive deploys?) ──────────────────────
+    if RAILWAY_VOLUME_MOUNT_PATH:
+        storage_line = f"  Volume Railway ({RAILWAY_VOLUME_MOUNT_PATH}) — historique conservé"
+    elif DB_EPHEMERAL:
+        storage_line = ("  ⚠️ Disque éphémère : historique effacé à chaque déploiement "
+                        "(attacher un volume Railway)")
+    else:
+        storage_line = "  Disque local"
+
     # ── Build report ─────────────────────────────────────────────────────
     nl = "\n"
     slots_block = nl.join(slots_status)
@@ -100,7 +111,10 @@ def daily_health_report():
 
 <b>Scraping</b>
   Articles collectés : <b>{articles_today}</b>
-{scrape_block}"""
+{scrape_block}
+
+<b>Stockage</b>
+{storage_line}"""
 
     if broken_lines:
         report += f"""

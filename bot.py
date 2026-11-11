@@ -16,10 +16,14 @@ from datetime import datetime
 from config import (
     TIMEZONE, TZ_NAME, DAILY_SLOTS, SEND_ON_START, SLOT_GRACE_MINUTES,
     SCRAPE_INTERVAL_MINUTES, SCRAPE_REQUEST_TIMEOUT, validate_config, log,
+    DB_PATH, DB_EPHEMERAL, RAILWAY_VOLUME_MOUNT_PATH,
 )
-from database import init_db, mark_slot_fired, get_fired_slots_today
+from database import (
+    init_db, mark_slot_fired, get_fired_slots_today, get_storage_stats,
+    record_sent_message, mark_articles_used, record_sent_images, log_health_event,
+)
 from generators import generate_message, generate_specific, check_models
-from telegram import dispatch
+from telegram import dispatch, send_admin
 from health import daily_health_report
 from scrapers import ALL_SCRAPERS
 
@@ -55,6 +59,24 @@ def run_scrapers():
 
 # ─── MESSAGE JOB ─────────────────────────────────────────────────────────────
 
+def publish(post) -> bool:
+    """Send a post, then record what was actually published: the topic
+    (anti-repetition), its articles (never offered to Claude again) and its
+    images (never posted again)."""
+    delivered, images_sent = dispatch(post.text, post.image_urls, msg_type=post.msg_type)
+    if post.summary:
+        record_sent_message(post.slot, post.category, post.msg_type, post.summary,
+                            success=delivered)
+    if delivered or images_sent:   # something visibly went out to the channel
+        mark_articles_used(post.article_ids)
+    record_sent_images([img for img in post.images if img.url in images_sent],
+                       post.category)
+    log.info(f"{'Dispatched' if delivered else 'NOT delivered'} [{post.msg_type}] "
+             f"{post.category} — {len(post.text)} chars, {len(images_sent)} image(s), "
+             f"{len(post.article_ids)} article(s) marked used")
+    return delivered
+
+
 def job(slot: int, slot_type: str):
     """Generate and send a message for a given slot."""
     now = datetime.now(TIMEZONE).strftime("%H:%M %Z")
@@ -67,9 +89,26 @@ def job(slot: int, slot_type: str):
         log.error(f"No message generated for slot {slot} — skipping send")
         return
 
-    for text, image_urls, msg_type, cat_key in items:
-        dispatch(text, image_urls, msg_type=msg_type)
-        log.info(f"Dispatched [{msg_type}] {cat_key} ({len(image_urls)} images)")
+    for post in items:
+        publish(post)
+
+
+def check_storage():
+    """Say whether the history survives deploys (Railway disk is ephemeral)."""
+    stats = get_storage_stats()
+    since = (stats["first_message"] or "")[:10] or "—"
+    log.info(f"Database: {DB_PATH} — {stats['articles']} articles, {stats['messages']} "
+             f"messages (since {since}), {stats['images']} images posted")
+    if RAILWAY_VOLUME_MOUNT_PATH:
+        log.info(f"   Stored on the Railway volume mounted at {RAILWAY_VOLUME_MOUNT_PATH} (persistent)")
+    elif DB_EPHEMERAL:
+        msg = ("La base SQLite est sur le disque éphémère de Railway : historique "
+               "anti-répétition, articles et images déjà publiés sont effacés à chaque "
+               "déploiement. Attachez un volume au service (Railway → service → Volumes, "
+               "point de montage /data par exemple) : le bot l'utilisera automatiquement.")
+        log.warning(msg)
+        log_health_event("storage_ephemeral", "Base SQLite hors volume Railway")
+        send_admin(f"⚠️ <b>Watchpoint — stockage</b>\n{msg}")
 
 
 # ─── SCHEDULER ───────────────────────────────────────────────────────────────
@@ -155,6 +194,7 @@ if __name__ == "__main__":
     socket.setdefaulttimeout(SCRAPE_REQUEST_TIMEOUT)
 
     init_db()
+    check_storage()
 
     # Fail loudly (logs + admin chat) if the Claude model is retired/unknown
     check_models()
@@ -186,9 +226,10 @@ if __name__ == "__main__":
             log.info(f"Testing: {cat_key}")
             items = generate_specific(cat_key)
             if items:
-                for text, image_urls, msg_type, ckey in items:
-                    dispatch(text, image_urls, msg_type=msg_type)
-                    log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars, {len(image_urls)} img)")
+                for post in items:
+                    ok = publish(post)
+                    log.info(f"{'✅ Sent' if ok else '❌ Not delivered'} [{post.msg_type}] "
+                             f"{post.category} ({len(post.text)} chars, {len(post.image_urls)} img)")
             else:
                 log.error(f"❌ No message generated for {cat_key}")
             time.sleep(3)
@@ -199,9 +240,10 @@ if __name__ == "__main__":
         log.info(f"╔═══ TEST MODE: {test_type.upper()} ═══╗")
         items = generate_specific(test_type)
         if items:
-            for text, image_urls, msg_type, ckey in items:
-                dispatch(text, image_urls, msg_type=msg_type)
-                log.info(f"✅ Sent [{msg_type}] {ckey} ({len(text)} chars, {len(image_urls)} img)")
+            for post in items:
+                ok = publish(post)
+                log.info(f"{'✅ Sent' if ok else '❌ Not delivered'} [{post.msg_type}] "
+                         f"{post.category} ({len(post.text)} chars, {len(post.image_urls)} img)")
         else:
             log.error(f"❌ No message generated for {test_type}")
         log.info("╚═══ TEST COMPLETE ═══╝")

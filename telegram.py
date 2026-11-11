@@ -146,7 +146,7 @@ def send_split(text: str, chat_id: str = None) -> bool:
     return success
 
 
-def dispatch(message: str, image_urls: list = None, msg_type: str = ""):
+def dispatch(message: str, image_urls: list = None, msg_type: str = "") -> tuple:
     """Send a message with photo(s). Always tries photo first.
 
     image_urls: list of image URL strings. Can be empty/None.
@@ -154,6 +154,9 @@ def dispatch(message: str, image_urls: list = None, msg_type: str = ""):
     If 2+ images: sendMediaGroup with caption on first
     If 0 images: sendMessage with text
     If caption too long for photo: sendPhoto + separate sendMessage
+
+    Returns (delivered, images_sent): whether the message text reached the
+    channel, and which image URLs were actually posted.
     """
     if not image_urls:
         image_urls = []
@@ -164,36 +167,34 @@ def dispatch(message: str, image_urls: list = None, msg_type: str = ""):
     if len(image_urls) >= 2:
         # Multiple images — try media group
         if len(message) <= 1024:
-            if not send_media_group(image_urls, message):
-                # Fallback: try single photo
-                if not send_photo(image_urls[0], message):
-                    send_message(message, allow_preview=True)
-        else:
-            # Caption too long — send photos with short caption, then full text
-            short_caption = _extract_title(message)
-            if send_media_group(image_urls, short_caption):
-                time.sleep(1)
-                send_message(message)
-            else:
-                send_message(message, allow_preview=True)
+            if send_media_group(image_urls, message):
+                return True, image_urls
+            # Fallback: try single photo
+            if send_photo(image_urls[0], message):
+                return True, image_urls[:1]
+            return send_message(message, allow_preview=True), []
+        # Caption too long — send photos with short caption, then full text
+        short_caption = _extract_title(message)
+        if send_media_group(image_urls, short_caption):
+            time.sleep(1)
+            return send_message(message), image_urls
+        return send_message(message, allow_preview=True), []
 
-    elif len(image_urls) == 1:
+    if len(image_urls) == 1:
         # Single image
         if len(message) <= 1024:
-            if not send_photo(image_urls[0], message):
-                send_message(message, allow_preview=True)
-        else:
-            # Caption too long — photo with title, then full text
-            short_caption = _extract_title(message)
-            if send_photo(image_urls[0], short_caption):
-                time.sleep(1)
-                send_message(message)
-            else:
-                send_message(message, allow_preview=True)
+            if send_photo(image_urls[0], message):
+                return True, image_urls
+            return send_message(message, allow_preview=True), []
+        # Caption too long — photo with title, then full text
+        short_caption = _extract_title(message)
+        if send_photo(image_urls[0], short_caption):
+            time.sleep(1)
+            return send_message(message), image_urls
+        return send_message(message, allow_preview=True), []
 
-    else:
-        # No images — text only
-        send_message(message, allow_preview=True)
+    # No images — text only
+    return send_message(message, allow_preview=True), []
 
 
 def _extract_title(message: str) -> str:
