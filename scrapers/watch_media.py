@@ -23,7 +23,8 @@ class WatchMediaScraper(BaseScraper, RSSMixin):
         ("Fratello Watches", "https://www.fratellowatches.com/feed/"),
         ("Monochrome", "https://www.monochrome-watches.com/feed/"),
         ("Worn & Wound", "https://www.wornandwound.com/feed/"),
-        ("All Watch News", "https://allwatchnews.com/feed/"),
+        # "All Watch News" removed: it is an iPhone app re-posting the feeds
+        # above (Hodinkee, Monochrome, Fratello…), not a publisher.
     ]
 
     def scrape(self) -> list[Article]:

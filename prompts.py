@@ -38,7 +38,7 @@ Règles de ton :
 ━━━ RÈGLES ABSOLUES ━━━
 ① FRAICHEUR : utilise uniquement des informations publiées dans la plage de dates indiquée dans le prompt. Si une information est trop ancienne, cherche un autre sujet — ne le signale pas, ne l'explique pas.
 
-② La réponse EST le message Telegram. Rien d'autre. INTERDIT de produire :
+② La réponse EST le message Telegram. Rien d'autre (seule exception : les lignes techniques SOURCES: et IMAGE: demandées en tête, retirées avant publication). INTERDIT de produire :
    toute phrase sur tes recherches, tes difficultés, les dates trouvées, les sources manquantes,
    ou n'importe quel commentaire sur ta démarche. Le message commence directement par le contenu.
 
